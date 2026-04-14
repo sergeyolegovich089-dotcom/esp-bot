@@ -1,30 +1,34 @@
 import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import gspread
-from google.oauth2.service_account import Credentials
+import os
+import json
 from datetime import datetime
 
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
+import gspread
+from google.oauth2.service_account import Credentials
+
 # === НАСТРОЙКИ ===
-TOKEN = "ТВОЙ_ТОКЕН_БОТА"
-SHEET_URL = "ТВОЯ_ССЫЛКА_НА_ТАБЛИЦУ"
+TOKEN = os.environ["BOT_TOKEN"]  # бери из Railway
+SHEET_ID = os.environ["SHEET_URL"]  # тут теперь ТОЛЬКО ID таблицы
 
 # === GOOGLE SHEETS ===
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-import os
-import json
-from google.oauth2.service_account import Credentials
+
 creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
-sheet = client.open_by_url(SHEET_URL).sheet1
+
+# ❗ ВАЖНО: используем open_by_key вместо open_by_url
+sheet = client.open_by_key(SHEET_ID).sheet1
 
 # === ЛОГИ ===
 logging.basicConfig(level=logging.INFO)
 
 # === КОМАНДА /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Бот работает. Используй /find Фамилия")
+    await update.message.reply_text("Бот работает. Используй /find Иванов")
 
 # === КОМАНДА /find ===
 async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
