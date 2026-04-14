@@ -11,7 +11,11 @@ SHEET_URL = "ТВОЯ_ССЫЛКА_НА_ТАБЛИЦУ"
 
 # === GOOGLE SHEETS ===
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+import os
+import json
+from google.oauth2.service_account import Credentials
+creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
 sheet = client.open_by_url(SHEET_URL).sheet1
 
