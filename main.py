@@ -20,7 +20,7 @@ from telegram.ext import (
     filters,
 )
 
-print("🔥 FINAL VERSION WITH SEARCH")
+print("🔥 FINAL CLEAN VERSION")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -75,30 +75,15 @@ async def show_cities(update, context):
     for i in range(0, len(cities), 2):
         row = [InlineKeyboardButton(cities[i], callback_data=f"city:{cities[i]}")]
         if i + 1 < len(cities):
-            row.append(InlineKeyboardButton(cities[i+1], callback_data=f"city:{cities[i+1]}"))
+            row.append(
+                InlineKeyboardButton(cities[i+1], callback_data=f"city:{cities[i+1]}")
+            )
         buttons.append(row)
 
     await update.message.reply_text(
         "Выбери город:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
-
-# ================== МЕСЯЦЫ ==================
-def get_month_buttons(city):
-    months = [
-        ("Янв",1),("Фев",2),("Мар",3),("Апр",4),
-        ("Май",5),("Июн",6),("Июл",7),("Авг",8),
-        ("Сен",9),("Окт",10),("Ноя",11),("Дек",12)
-    ]
-
-    buttons = []
-    for i in range(0, len(months), 3):
-        row = []
-        for m in months[i:i+3]:
-            row.append(InlineKeyboardButton(m[0], callback_data=f"month:{city}:{m[1]}"))
-        buttons.append(row)
-
-    return InlineKeyboardMarkup(buttons)
 
 # ================== CALLBACK ==================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -107,26 +92,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
 
+    # ГОРОД → СРАЗУ СПИСОК
     if data.startswith("city:"):
-        city = data.split(":")[1]
-
-        await query.message.reply_text(
-            f"🏙 {city}\nВыбери месяц:",
-            reply_markup=get_month_buttons(city)
-        )
-
-    elif data.startswith("month:"):
-        _, city, month = data.split(":")
-        month = int(month)
+        city = data.split(":")[1].lower()
 
         result = []
 
         for row in get_data():
-            d = parse_date(row.get("Дата окончания", ""))
-            if not d:
-                continue
-
-            if city.lower() in row.get("Город", "").lower() and d.month == month:
+            if city in row.get("Город", "").lower():
                 result.append(
                     f"🏙 {row.get('Город')}\n"
                     f"👤 {row.get('ФИО')}\n"
@@ -169,16 +142,16 @@ async def check_now(update, context):
         elif days <= 30:
             yellow.append(info)
 
-    if red or orange or yellow:
-        text = ""
+    text = ""
 
-        if red:
-            text += "🔴🔴🔴 ПРОСРОЧЕНО 🚨\n" + "\n\n".join(red) + "\n\n"
-        if orange:
-            text += "🟠🟠 СРОЧНО ⚠️\n" + "\n\n".join(orange) + "\n\n"
-        if yellow:
-            text += "🟡 ВНИМАНИЕ\n" + "\n\n".join(yellow)
+    if red:
+        text += "🔴🔴🔴 ПРОСРОЧЕНО 🚨\n" + "\n\n".join(red) + "\n\n"
+    if orange:
+        text += "🟠🟠 СРОЧНО ⚠️\n" + "\n\n".join(orange) + "\n\n"
+    if yellow:
+        text += "🟡 ВНИМАНИЕ\n" + "\n\n".join(yellow)
 
+    if text:
         await update.message.reply_text(text)
     else:
         await update.message.reply_text("😎 Олегыч, всё под контролем")
@@ -201,13 +174,12 @@ async def show_all(update, context):
 async def text_handler(update, context):
     text = update.message.text.lower()
 
-    # === АКТИВАЦИЯ ПОИСКА ===
+    # === ПОИСК ===
     if text == "🔍 поиск":
         context.user_data["mode"] = "search"
         await update.message.reply_text("Введи фамилию или имя")
         return
 
-    # === РЕЖИМ ПОИСКА ===
     if context.user_data.get("mode") == "search":
         context.user_data["mode"] = None
 
@@ -238,7 +210,11 @@ async def text_handler(update, context):
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Выбери действие 👇", reply_markup=keyboard)))
+    app.add_handler(CommandHandler(
+        "start",
+        lambda u, c: u.message.reply_text("Выбери действие 👇", reply_markup=keyboard)
+    ))
+
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT, text_handler))
 
