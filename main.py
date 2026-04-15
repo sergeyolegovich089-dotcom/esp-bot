@@ -1,7 +1,8 @@
 import logging
 import os
 import json
-from datetime import datetime, time
+import asyncio
+from datetime import datetime
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -20,7 +21,7 @@ from google.oauth2.service_account import Credentials
 TOKEN = os.environ["BOT_TOKEN"]
 SHEET_ID = os.environ["SHEET_ID"]
 
-MY_CHAT_ID = 568554255  # 👈 ТВОЙ ID
+MY_CHAT_ID = 568554255
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
@@ -47,14 +48,11 @@ keyboard = ReplyKeyboardMarkup(
 # ================= СТАРТ =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Бот работает 👌\nВыбери действие:",
-        reply_markup=keyboard
-    )
+    await update.message.reply_text("Бот работает 👌", reply_markup=keyboard)
 
 # ================= НАПОМИНАНИЯ =================
 
-async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
+async def check_expirations_once():
     data = sheet.get_all_records()
     today = datetime.today()
 
@@ -63,7 +61,7 @@ async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
             date_str = str(row.get("Дата окончания", "")).strip()
 
             date_obj = None
-            for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y"):
+            for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
                 try:
                     date_obj = datetime.strptime(date_str, fmt)
                     break
@@ -83,42 +81,35 @@ async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
                     f"⏳ Осталось: {days_left} дней"
                 )
 
-                await context.bot.send_message(
-                    chat_id=MY_CHAT_ID,
-                    text=msg
-                )
+                app.bot.send_message(chat_id=MY_CHAT_ID, text=msg)
 
         except:
             continue
 
-# ================= ПОИСК ПО ФИО =================
+# 🔁 ФОНОВЫЙ ЦИКЛ
+async def background_checker():
+    while True:
+        await check_expirations_once()
+        await asyncio.sleep(3600)  # раз в час
+
+# ================= ПОИСК =================
 
 async def search_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
     data = sheet.get_all_records()
 
-    found = []
-
-    for row in data:
-        fio = str(row.get("ФИО", "")).lower()
-        if text in fio:
-            found.append(row)
+    found = [r for r in data if text in str(r.get("ФИО", "")).lower()]
 
     if not found:
         await update.message.reply_text("❌ Ничего не найдено")
         return
 
     for row in found[:5]:
-        msg = (
-            f"👤 {row.get('ФИО','')}\n"
-            f"💼 {row.get('Должность','')}\n"
-            f"🏙 {row.get('Город','')}\n"
-            f"📅 До: {row.get('Дата окончания','')}\n"
-            f"📊 {row.get('Статус','')}"
+        await update.message.reply_text(
+            f"{row.get('ФИО')}\nДо: {row.get('Дата окончания')}"
         )
-        await update.message.reply_text(msg)
 
-# ================= МЕСЯЦЫ =================
+# ================= МЕСЯЦ =================
 
 MONTHS = {
     "1": 1, "январь": 1,
@@ -135,13 +126,11 @@ MONTHS = {
     "12": 12, "декабрь": 12,
 }
 
-# ================= ПОИСК ПО МЕСЯЦУ =================
-
 async def search_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower().strip()
 
     if text not in MONTHS:
-        await update.message.reply_text("Напиши месяц (например: июль или 7)")
+        await update.message.reply_text("Введите месяц (например: июль или 7)")
         return
 
     month = MONTHS[text]
@@ -150,35 +139,21 @@ async def search_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     found = []
 
     for row in data:
-        date_str = str(row.get("Дата окончания", "")).strip()
-
-        date_obj = None
-        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y"):
-            try:
-                date_obj = datetime.strptime(date_str, fmt)
-                break
-            except:
-                continue
-
-        if not date_obj:
+        try:
+            date_obj = datetime.strptime(row["Дата окончания"], "%Y-%m-%d")
+            if date_obj.month == month:
+                found.append(row)
+        except:
             continue
-
-        if date_obj.month == month:
-            found.append(row)
 
     if not found:
         await update.message.reply_text("❌ Ничего не найдено")
         return
 
-    await update.message.reply_text(f"Найдено: {len(found)}")
-
     for row in found[:10]:
-        msg = (
-            f"👤 {row.get('ФИО','')}\n"
-            f"📅 До: {row.get('Дата окончания','')}\n"
-            f"📊 {row.get('Статус','')}"
+        await update.message.reply_text(
+            f"{row['ФИО']}\nДо: {row['Дата окончания']}"
         )
-        await update.message.reply_text(msg)
 
 # ================= ОБРАБОТКА =================
 
@@ -196,7 +171,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "📢 Проверить сейчас":
-        await check_expirations(context)
+        await check_expirations_once()
         await update.message.reply_text("Проверка выполнена ✅")
         return
 
@@ -206,22 +181,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await search_name(update, context)
     elif mode == "month":
         await search_month(update, context)
-    else:
-        await update.message.reply_text("Выбери действие через кнопки 👇")
 
 # ================= ЗАПУСК =================
 
 def main():
+    global app
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # ⏰ КАЖДЫЙ ДЕНЬ В 09:00
-    app.job_queue.run_daily(
-        check_expirations,
-        time=time(hour=9, minute=0),
-    )
+    # 🚀 запускаем фон
+    app.create_task(background_checker())
 
     print("Бот запущен 🚀")
     app.run_polling()
