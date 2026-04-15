@@ -1,103 +1,97 @@
 import logging
 import os
 import json
-from datetime import datetime
-
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 import gspread
 from google.oauth2.service_account import Credentials
 
-# =========================
-# 🔐 НАСТРОЙКИ
-# =========================
-
+# === ПЕРЕМЕННЫЕ ===
 TOKEN = os.environ["BOT_TOKEN"]
 SHEET_ID = os.environ["SHEET_URL"]
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+# === GOOGLE SHEETS ===
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
-# =========================
-# 📊 GOOGLE SHEETS
-# =========================
+creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+client = gspread.authorize(creds)
 
-def get_sheet():
-    creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    client = gspread.authorize(creds)
-    return client.open_by_key(SHEET_ID).sheet1
+sheet = client.open_by_key(SHEET_ID).sheet1
 
-# =========================
-# 🧠 ЛОГИ
-# =========================
+# === ЛОГИ ===
+logging.basicConfig(level=logging.INFO)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+# === КНОПКИ ===
+keyboard = ReplyKeyboardMarkup(
+    [
+        ["🔍 Найти сотрудника"],
+        ["ℹ️ Помощь"],
+    ],
+    resize_keyboard=True
 )
 
-# =========================
-# 🚀 КОМАНДЫ
-# =========================
-
+# === /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Бот работает\n\n"
-        "Используй:\n"
-        "/find Иванов"
+        "👋 Привет!\n\nВыбери действие:",
+        reply_markup=keyboard
     )
 
-# 🔍 УМНЫЙ ПОИСК
-async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if not context.args:
-            await update.message.reply_text("Напиши: /find Иванов")
-            return
+# === ПОМОЩЬ ===
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📌 Просто нажми «Найти сотрудника» и введи фамилию"
+    )
 
-        query = " ".join(context.args).lower()
+# === ОБРАБОТКА КНОПОК ===
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
 
-        sheet = get_sheet()
-        data = sheet.get_all_records()
+    if text == "🔍 Найти сотрудника":
+        await update.message.reply_text("Введите фамилию:")
+        return
 
-        results = []
+    if text == "ℹ️ Помощь":
+        await help_command(update, context)
+        return
 
-        for row in data:
-            fio = str(row.get("ФИО", "")).lower()
+    # === ПОИСК ===
+    name = text.lower()
+    data = sheet.get_all_records()
 
-            if query in fio:
-                results.append(row)
-
-        if not results:
-            await update.message.reply_text("❌ Ничего не найдено")
-            return
-
-        # выводим максимум 5 результатов
-        for row in results[:5]:
+    for row in data:
+        if name in row["ФИО"].lower():
             msg = (
-                f"👤 {row.get('ФИО','-')}\n"
-                f"💼 {row.get('Должность','-')}\n"
-                f"🏙 {row.get('Город','-')}\n"
-                f"📅 {row.get('Дата начала','-')} → {row.get('Дата окончания','-')}\n"
-                f"📊 Статус: {row.get('Статус','-')}\n"
+                f"👤 <b>{row['ФИО']}</b>\n\n"
+                f"🏢 Должность: {row['Должность']}\n"
+                f"🌍 Город: {row['Город']}\n"
+                f"📅 Начало: {row['Дата начала']}\n"
+                f"📅 Окончание: {row['Дата окончания']}\n"
+                f"📊 Статус: {row['Статус']}"
             )
-            await update.message.reply_text(msg)
 
-    except Exception as e:
-        logging.error(f"Ошибка в /find: {e}")
-        await update.message.reply_text("⚠️ Ошибка при поиске")
+            await update.message.reply_text(msg, parse_mode="HTML")
+            return
 
-# =========================
-# 🏁 ЗАПУСК
-# =========================
+    await update.message.reply_text("❌ Ничего не найдено")
 
+# === ЗАПУСК ===
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("find", find))
+    app.add_handler(CommandHandler("help", help_command))
 
-    print("✅ Бот запущен")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
+
+    print("Бот запущен...")
     app.run_polling()
 
 if __name__ == "__main__":
