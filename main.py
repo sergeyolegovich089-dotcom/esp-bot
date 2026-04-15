@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-print("✅ FINAL STABLE VERSION")
+print("✅ VERSION WITH CITY FILTER")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -56,6 +56,8 @@ def check_logic():
 
     for row in data:
         name = row.get("ФИО", "")
+        position = row.get("Должность", "")
+        city = row.get("Город", "")
         date_str = row.get("Дата окончания", "")
         extended = str(row.get("Продлено", "")).lower()
 
@@ -69,11 +71,11 @@ def check_logic():
         days = (d - today).days
 
         if days == 0:
-            msg = f"⚠️ СЕГОДНЯ: {name} — {date_str}"
+            msg = f"⚠️ СЕГОДНЯ:\n👤 {name}\n🏢 {position}\n🏙 {city}\n📅 {date_str}"
         elif days < 0:
-            msg = f"🚨 ПРОСРОЧЕНО: {name} — {date_str} ({abs(days)} дн.)"
+            msg = f"🚨 ПРОСРОЧЕНО:\n👤 {name}\n🏢 {position}\n🏙 {city}\n📅 {date_str} ({abs(days)} дн.)"
         elif days in [30, 16, 7]:
-            msg = f"⚠️ {name} — через {days} дн. ({date_str})"
+            msg = f"⚠️ Через {days} дн.:\n👤 {name}\n🏢 {position}\n🏙 {city}\n📅 {date_str}"
         else:
             continue
 
@@ -81,6 +83,18 @@ def check_logic():
 
     result.sort(key=lambda x: x[0])
     return [r[1] for r in result]
+
+# ================== ГОРОДА ==================
+def get_cities():
+    data = get_data()
+    cities = set()
+
+    for row in data:
+        city = row.get("Город", "")
+        if city:
+            cities.add(city.strip())
+
+    return sorted(list(cities))
 
 # ================== ПРОДЛЕНИЕ ==================
 def mark_extended(name):
@@ -90,9 +104,8 @@ def mark_extended(name):
 
         for i, row in enumerate(rows, start=2):
             if name.lower() in row.get("ФИО", "").lower():
-                sheet.update_cell(i, 8, "да")  # колонка H
+                sheet.update_cell(i, 8, "да")
                 return True
-
         return False
 
     except Exception as e:
@@ -103,8 +116,8 @@ def mark_extended(name):
 keyboard = ReplyKeyboardMarkup(
     [
         ["🔍 Поиск", "📅 По месяцу"],
-        ["📋 Показать всё", "⚡ Проверить сейчас"],
-        ["✅ Продлить"],
+        ["🏙 По городу", "📋 Показать всё"],
+        ["⚡ Проверить сейчас", "✅ Продлить"],
     ],
     resize_keyboard=True,
 )
@@ -117,39 +130,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================== ПРОВЕРКА ==================
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = check_logic()
-    await update.message.reply_text("\n".join(res) or "😎 Олегыч, всё тихо")
+    await update.message.reply_text("\n\n".join(res) or "😎 Олегыч, всё тихо")
 
-# ================== РЕЖИМ ПРОДЛЕНИЯ ==================
+# ================== ПРОДЛИТЬ ==================
 async def extend_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["mode"] = "extend"
     await update.message.reply_text("Введи фамилию для продления")
 
 # ================== ПЛАНИРОВЩИК ==================
 last_sent = set()
-last_check_day = None
 last_send_day = None
 
 async def scheduler(app):
-    global last_check_day, last_send_day, last_sent
+    global last_sent, last_send_day
 
     await asyncio.sleep(5)
 
     while True:
         now = datetime.now()
 
-        # Проверка в 9
-        if now.hour >= 9 and last_check_day != now.date():
-            print("🔍 Проверка выполнена")
-            last_check_day = now.date()
-
-        # Отправка в 11
         if now.hour >= 11 and last_send_day != now.date():
             print("📨 Отправка уведомлений")
 
             result = check_logic()
             new_msgs = [r for r in result if r not in last_sent]
 
-            text = "\n".join(new_msgs) if new_msgs else "😎 Олегыч, всё тихо"
+            text = "\n\n".join(new_msgs) if new_msgs else "😎 Олегыч, всё тихо"
 
             for chat_id in app.bot_data["chat_ids"]:
                 await app.bot.send_message(chat_id, text)
@@ -164,7 +170,23 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
     context.application.bot_data["chat_ids"].add(update.effective_chat.id)
 
-    # ПРОДЛЕНИЕ
+    # ===== ГОРОД =====
+    if context.user_data.get("mode") == "city":
+        context.user_data["mode"] = None
+
+        city_input = text
+
+        res = []
+        for row in get_data():
+            if city_input in row.get("Город", "").lower():
+                res.append(
+                    f"🏙 {row.get('Город')}\n👤 {row.get('ФИО')}\n🏢 {row.get('Должность')}\n📅 {row.get('Дата окончания')}"
+                )
+
+        await update.message.reply_text("\n\n".join(res) or "❌ Ничего не найдено")
+        return
+
+    # ===== ПРОДЛЕНИЕ =====
     if context.user_data.get("mode") == "extend":
         context.user_data["mode"] = None
 
@@ -174,7 +196,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Не найдено")
         return
 
-    # МЕСЯЦ
+    # ===== МЕСЯЦ =====
     if context.user_data.get("mode") == "month":
         context.user_data["mode"] = None
 
@@ -190,23 +212,33 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for row in get_data():
             d = parse_date(row.get("Дата окончания", ""))
             if d and d.month == month:
-                res.append(f"{row.get('ФИО')} — {row.get('Дата окончания')}")
+                res.append(
+                    f"👤 {row.get('ФИО')}\n🏢 {row.get('Должность')}\n🏙 {row.get('Город')}\n📅 {row.get('Дата окончания')}"
+                )
 
-        await update.message.reply_text("\n".join(res) or "❌ Ничего не найдено")
+        await update.message.reply_text("\n\n".join(res) or "❌ Ничего не найдено")
         return
 
-    # КНОПКИ
-    if text == "⚡ проверить сейчас":
+    # ===== КНОПКИ =====
+    if text == "🏙 по городу":
+        context.user_data["mode"] = "city"
+        cities = get_cities()
+        await update.message.reply_text("Выбери город:\n" + "\n".join(cities))
+    
+    elif text == "⚡ проверить сейчас":
         await check_now(update, context)
 
     elif text == "📋 показать всё":
         data = get_data()
-        res = [f"{r.get('ФИО')} — {r.get('Дата окончания')}" for r in data]
-        await update.message.reply_text("\n".join(res[:50]) or "Нет данных")
+        res = [
+            f"🏙 {r.get('Город')}\n👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n📅 {r.get('Дата окончания')}"
+            for r in data
+        ]
+        await update.message.reply_text("\n\n".join(res[:50]) or "Нет данных")
 
     elif text == "📅 по месяцу":
         context.user_data["mode"] = "month"
-        await update.message.reply_text("Введи месяц (например: июль или 7)")
+        await update.message.reply_text("Введи месяц")
 
     elif text == "🔍 поиск":
         await update.message.reply_text("Введи фамилию или имя")
@@ -217,11 +249,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         data = get_data()
         res = [
-            f"{r.get('ФИО')} — {r.get('Дата окончания')}"
+            f"🏙 {r.get('Город')}\n👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n📅 {r.get('Дата окончания')}"
             for r in data
             if text in r.get("ФИО", "").lower()
         ]
-        await update.message.reply_text("\n".join(res) or "❌ Ничего не найдено")
+        await update.message.reply_text("\n\n".join(res) or "❌ Ничего не найдено")
 
 # ================== MAIN ==================
 def main():
