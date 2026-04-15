@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-print("✅ DAILY VERSION CUSTOM")
+print("✅ STABLE VERSION")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -23,15 +23,11 @@ GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS")
 
 # ================== GOOGLE ==================
 def get_sheet():
-    creds_dict = json.loads(GOOGLE_CREDENTIALS)
-
     creds = Credentials.from_service_account_info(
-        creds_dict,
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+        json.loads(GOOGLE_CREDENTIALS),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
-
-    client = gspread.authorize(creds)
-    return client.open_by_key(SHEET_ID).sheet1
+    return gspread.authorize(creds).open_by_key(SHEET_ID).sheet1
 
 def get_data():
     try:
@@ -72,59 +68,92 @@ def check_logic():
 
         days = (d - today).days
 
-        if days in [30, 16, 7] or days <= 0:
-            result.append(f"⚠️ {name} — {date_str} ({days} дн.)")
+        if days == 0:
+            msg = f"⚠️ СЕГОДНЯ: {name} — {date_str}"
+        elif days < 0:
+            msg = f"🚨 ПРОСРОЧЕНО: {name} — {date_str} ({abs(days)} дн.)"
+        elif days in [30, 16, 7]:
+            msg = f"⚠️ {name} — через {days} дн. ({date_str})"
+        else:
+            continue
 
-    return result
+        result.append((days, msg))
+
+    result.sort(key=lambda x: x[0])
+    return [r[1] for r in result]
 
 # ================== КНОПКИ ==================
 keyboard = ReplyKeyboardMarkup(
     [
         ["🔍 Поиск", "📅 По месяцу"],
         ["📋 Показать всё", "⚡ Проверить сейчас"],
+        ["✅ Продлить"],
     ],
     resize_keyboard=True,
 )
 
 # ================== START ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.application.chat_ids.add(update.effective_chat.id)
+    context.application.bot_data["chat_ids"].add(update.effective_chat.id)
     await update.message.reply_text("Выбери действие 👇", reply_markup=keyboard)
 
-# ================== РУЧНАЯ ПРОВЕРКА ==================
+# ================== ПРОВЕРКА ==================
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    result = check_logic()
-    await update.message.reply_text("\n".join(result) or "😎 Олегыч, всё тихо")
+    res = check_logic()
+    await update.message.reply_text("\n".join(res) or "😎 Олегыч, всё тихо")
+
+# ================== ПРОДЛИТЬ ==================
+async def extend_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["mode"] = "extend"
+    await update.message.reply_text("Введи фамилию для продления")
+
+def mark_extended(name):
+    try:
+        sheet = get_sheet()
+        rows = sheet.get_all_records()
+
+        for i, row in enumerate(rows, start=2):
+            if name.lower() in row.get("ФИО", "").lower():
+                sheet.update_cell(i, 8, "да")  # колонка H = Продлено
+                return True
+
+        return False
+
+    except Exception as e:
+        print("❌ Ошибка продления:", e)
+        return False
 
 # ================== ПЛАНИРОВЩИК ==================
-last_result = []
+last_sent = set()
 last_check_day = None
 last_send_day = None
 
 async def scheduler(app):
-    global last_result, last_check_day, last_send_day
+    global last_check_day, last_send_day, last_sent
 
     await asyncio.sleep(10)
 
     while True:
         now = datetime.now()
 
+        # проверка в 9
         if now.hour >= 9 and last_check_day != now.date():
-            print("🔍 Проверка после 09:00")
-            last_result = check_logic()
+            print("🔍 Проверка выполнена")
             last_check_day = now.date()
 
+        # отправка в 11
         if now.hour >= 11 and last_send_day != now.date():
-            print("📨 Отправка после 11:00")
+            print("📨 Отправка уведомлений")
 
-            text = "\n".join(last_result) if last_result else "😎 Олегыч, всё тихо"
+            result = check_logic()
+            new_msgs = [r for r in result if r not in last_sent]
 
-            for chat_id in app.chat_ids:
-                try:
-                    await app.bot.send_message(chat_id, text)
-                except Exception as e:
-                    print("❌ Ошибка отправки:", e)
+            text = "\n".join(new_msgs) if new_msgs else "😎 Олегыч, всё тихо"
 
+            for chat_id in app.bot_data["chat_ids"]:
+                await app.bot.send_message(chat_id, text)
+
+            last_sent = set(result)
             last_send_day = now.date()
 
         await asyncio.sleep(60)
@@ -132,7 +161,17 @@ async def scheduler(app):
 # ================== ОБРАБОТКА ==================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
-    context.application.chat_ids.add(update.effective_chat.id)
+    context.application.bot_data["chat_ids"].add(update.effective_chat.id)
+
+    # ===== ПРОДЛЕНИЕ =====
+    if context.user_data.get("mode") == "extend":
+        context.user_data["mode"] = None
+
+        if mark_extended(text):
+            await update.message.reply_text("✅ Отмечено как продлено")
+        else:
+            await update.message.reply_text("❌ Не найдено")
+        return
 
     # ===== МЕСЯЦ =====
     if context.user_data.get("mode") == "month":
@@ -146,17 +185,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         month = months.get(text) or (int(text) if text.isdigit() else None)
 
-        if not month:
-            await update.message.reply_text("❌ Неверный месяц")
-            return
-
-        result = []
+        res = []
         for row in get_data():
             d = parse_date(row.get("Дата окончания", ""))
             if d and d.month == month:
-                result.append(f"{row.get('ФИО')} — {row.get('Дата окончания')}")
+                res.append(f"{row.get('ФИО')} — {row.get('Дата окончания')}")
 
-        await update.message.reply_text("\n".join(result) or "❌ Ничего не найдено")
+        await update.message.reply_text("\n".join(res) or "❌ Ничего не найдено")
         return
 
     # ===== КНОПКИ =====
@@ -170,34 +205,36 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "📅 по месяцу":
         context.user_data["mode"] = "month"
-        await update.message.reply_text("Введи месяц")
+        await update.message.reply_text("Введи месяц (например: июль или 7)")
 
     elif text == "🔍 поиск":
-        context.user_data["mode"] = "search"
         await update.message.reply_text("Введи фамилию или имя")
+
+    elif text == "✅ продлить":
+        await extend_mode(update, context)
 
     else:
         data = get_data()
-        result = [
+        res = [
             f"{r.get('ФИО')} — {r.get('Дата окончания')}"
             for r in data
             if text in r.get("ФИО", "").lower()
         ]
-
-        await update.message.reply_text("\n".join(result) or "❌ Ничего не найдено")
+        await update.message.reply_text("\n".join(res) or "❌ Ничего не найдено")
 
 # ================== MAIN ==================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.chat_ids = set()
+    # важно!
+    app.bot_data["chat_ids"] = set()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT, text_handler))
 
     app.create_task(scheduler(app))
 
-    print("🚀 BOT STARTED CUSTOM MODE")
+    print("🚀 BOT STARTED")
     app.run_polling()
 
 if __name__ == "__main__":
