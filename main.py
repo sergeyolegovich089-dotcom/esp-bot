@@ -1,234 +1,184 @@
 import os
-import logging
-from datetime import datetime, timedelta
-
+import asyncio
+from datetime import datetime
+import json
 import gspread
 from google.oauth2.service_account import Credentials
 
-from telegram import ReplyKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 
-logging.basicConfig(level=logging.INFO)
-
-# =====================
-# ENV
-# =====================
+# ================= НАСТРОЙКИ =================
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-# =====================
-# GOOGLE SHEETS
-# =====================
-scope = ["https://www.googleapis.com/auth/spreadsheets"]
-creds = Credentials.from_service_account_info(
-    eval(os.getenv("GOOGLE_CREDENTIALS")), scopes=scope
-)
+# --- Google авторизация ---
+creds_dict = json.loads(os.getenv("GOOGLE_CREDENTIALS"))
+creds = Credentials.from_service_account_info(creds_dict)
 client = gspread.authorize(creds)
 sheet = client.open_by_key(SHEET_ID).sheet1
 
-# =====================
-# КНОПКИ
-# =====================
-menu = ReplyKeyboardMarkup(
-    [
-        ["🔍 Поиск", "📅 По месяцу"],
-        ["📋 Показать все", "⚡ Проверить сейчас"],
-        ["✅ Продлено"],
-    ],
-    resize_keyboard=True,
-)
+# ================= КНОПКИ =================
+keyboard = [
+    ["🔍 Поиск", "📅 По месяцу"],
+    ["📋 Показать всё", "⚡ Проверить сейчас"]
+]
+markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# =====================
-# СТАРТ
-# =====================
+# ================= ДАННЫЕ =================
+def get_data():
+    return sheet.get_all_records()
+
+# ================= ПРОВЕРКА =================
+def check_expiring():
+    data = get_data()
+    today = datetime.today()
+    results = []
+
+    for row in data:
+        name = row.get("ФИО", "")
+        date_str = row.get("Дата окончания", "")
+
+        try:
+            exp_date = datetime.strptime(date_str, "%Y-%m-%d")
+            days_left = (exp_date - today).days
+
+            if days_left in [30, 15, 7] or days_left <= 3:
+                results.append(
+                    f"👤 {name}\n📅 До: {date_str}\n⏳ Осталось: {days_left} дн.\n"
+                )
+        except:
+            continue
+
+    return results
+
+# ================= ФОН =================
+async def background_checker(app):
+    while True:
+        print("🔄 Фоновая проверка...")
+
+        try:
+            results = check_expiring()
+
+            if results:
+                text = "⚠️ Напоминание по ЭЦП:\n\n" + "\n".join(results)
+                await app.bot.send_message(chat_id=ADMIN_ID, text=text)
+            else:
+                print("✅ Всё спокойно")
+
+        except Exception as e:
+            print("Ошибка проверки:", e)
+
+        await asyncio.sleep(86400)  # раз в сутки
+
+# ================= СТАРТ =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Выбери действие 👇", reply_markup=menu)
+    await update.message.reply_text(
+        "Выбери действие 👇",
+        reply_markup=markup
+    )
 
-# =====================
-# ПОИСК ПО МЕСЯЦУ
-# =====================
-def parse_month(text):
-    text = text.lower()
-
-    months = {
-        "январь": 1, "февраль": 2, "март": 3,
-        "апрель": 4, "май": 5, "июнь": 6,
-        "июль": 7, "август": 8, "сентябрь": 9,
-        "октябрь": 10, "ноябрь": 11, "декабрь": 12
-    }
-
-    if text.isdigit():
-        return int(text)
-
-    return months.get(text)
-
-
-# =====================
-# ПРОВЕРКА СРОКОВ
-# =====================
-async def check_expiry(context: ContextTypes.DEFAULT_TYPE):
-    rows = sheet.get_all_records()
-    today = datetime.now()
-
-    for row in rows:
-        name = row.get("ФИО", "")
-        date_str = row.get("Дата окончания", "")
-        status = row.get("Продлено", "").lower()
-
-        if status == "да":
-            continue
-
-        try:
-            expiry = datetime.strptime(date_str, "%Y-%m-%d")
-        except:
-            continue
-
-        days_left = (expiry - today).days
-
-        if days_left in [30, 15, 7] or days_left <= 3:
-            text = f"⚠️ {name}\nСрок до: {date_str} ({days_left} дн.)"
-            await context.bot.send_message(chat_id=context.job.chat_id, text=text)
-
-
-# =====================
-# ПРОВЕРИТЬ СЕЙЧАС
-# =====================
-async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rows = sheet.get_all_records()
-    today = datetime.now()
-    found = False
-
-    for row in rows:
-        name = row.get("ФИО", "")
-        date_str = row.get("Дата окончания", "")
-        status = row.get("Продлено", "").lower()
-
-        if status == "да":
-            continue
-
-        try:
-            expiry = datetime.strptime(date_str, "%Y-%m-%d")
-        except:
-            continue
-
-        days_left = (expiry - today).days
-
-        if days_left <= 30:
-            found = True
-            await update.message.reply_text(
-                f"⚠️ {name}\nДо: {date_str} ({days_left} дн.)"
-            )
-
-    if not found:
-        await update.message.reply_text("✅ Всё спокойно")
-
-
-# =====================
-# ОБРАБОТКА СООБЩЕНИЙ
-# =====================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= ОБРАБОТКА =================
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    # кнопки
-    if text == "📅 По месяцу":
-        context.user_data["mode"] = "month"
-        await update.message.reply_text("Введите месяц (например: июль или 7)")
-        return
+    # --- ПРОВЕРИТЬ СЕЙЧАС ---
+    if text == "⚡ Проверить сейчас":
+        results = check_expiring()
 
-    elif text == "🔍 Поиск":
-        context.user_data["mode"] = "search"
-        await update.message.reply_text("Введите имя")
-        return
+        if results:
+            await update.message.reply_text("\n".join(results))
+        else:
+            await update.message.reply_text("✅ Всё спокойно")
 
-    elif text == "📋 Показать все":
-        rows = sheet.get_all_records()
-        for row in rows:
-            await update.message.reply_text(
-                f"{row.get('ФИО')}\nДо: {row.get('Дата окончания')}"
+    # --- ПОКАЗАТЬ ВСЕ ---
+    elif text == "📋 Показать всё":
+        data = get_data()
+        lines = []
+
+        for row in data:
+            lines.append(
+                f"👤 {row.get('ФИО')}\n📅 До: {row.get('Дата окончания')}\n"
             )
-        return
 
-    elif text == "⚡ Проверить сейчас":
-        await check_now(update, context)
-        return
+        await update.message.reply_text("\n".join(lines[:30]))
 
-    elif text == "✅ Продлено":
-        context.user_data["mode"] = "done"
-        await update.message.reply_text("Введите имя сотрудника")
-        return
+    # --- ПО МЕСЯЦУ ---
+    elif text == "📅 По месяцу":
+        await update.message.reply_text("Введи месяц (например: июль или 7)")
 
-    # =====================
-    # РЕЖИМЫ
-    # =====================
-    mode = context.user_data.get("mode")
+    elif text.lower() in [
+        "январь","февраль","март","апрель","май","июнь",
+        "июль","август","сентябрь","октябрь","ноябрь","декабрь"
+    ] or text.isdigit():
 
-    rows = sheet.get_all_records()
+        months = {
+            "январь":1,"февраль":2,"март":3,"апрель":4,
+            "май":5,"июнь":6,"июль":7,"август":8,
+            "сентябрь":9,"октябрь":10,"ноябрь":11,"декабрь":12
+        }
 
-    # поиск
-    if mode == "search":
-        for row in rows:
-            if text.lower() in row.get("ФИО", "").lower():
-                await update.message.reply_text(
-                    f"{row.get('ФИО')}\nДо: {row.get('Дата окончания')}"
-                )
-                return
-        await update.message.reply_text("❌ Не найдено")
+        month = int(text) if text.isdigit() else months.get(text.lower())
 
-    # месяц
-    elif mode == "month":
-        month = parse_month(text)
-        if not month:
-            await update.message.reply_text("❌ Неверный месяц")
-            return
+        data = get_data()
+        results = []
 
-        found = False
-
-        for row in rows:
+        for row in data:
+            date_str = row.get("Дата окончания", "")
             try:
-                date = datetime.strptime(row.get("Дата окончания"), "%Y-%m-%d")
+                d = datetime.strptime(date_str, "%Y-%m-%d")
+                if d.month == month:
+                    results.append(
+                        f"👤 {row.get('ФИО')}\n📅 До: {date_str}\n"
+                    )
             except:
                 continue
 
-            if date.month == month:
-                found = True
-                await update.message.reply_text(
-                    f"{row.get('ФИО')}\nДо: {row.get('Дата окончания')}"
-                )
-
-        if not found:
+        if results:
+            await update.message.reply_text("\n".join(results))
+        else:
             await update.message.reply_text("❌ Ничего не найдено")
 
-    # продлено
-    elif mode == "done":
-        for i, row in enumerate(rows, start=2):
-            if text.lower() in row.get("ФИО", "").lower():
-                sheet.update_cell(i, 3, "да")  # колонка Продлено
-                await update.message.reply_text(f"✅ Отмечено: {row.get('ФИО')}")
-                return
+    # --- ПОИСК (ПРОСТОЙ) ---
+    elif text == "🔍 Поиск":
+        await update.message.reply_text("Введи имя для поиска")
 
-        await update.message.reply_text("❌ Не найдено")
+    else:
+        data = get_data()
+        results = []
 
+        for row in data:
+            name = row.get("ФИО", "").lower()
+            if text.lower() in name:
+                results.append(
+                    f"👤 {row.get('ФИО')}\n📅 До: {row.get('Дата окончания')}\n"
+                )
 
-# =====================
-# MAIN
-# =====================
-def main():
+        if results:
+            await update.message.reply_text("\n".join(results))
+        else:
+            await update.message.reply_text("❌ Ничего не найдено")
+
+# ================= MAIN =================
+async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT, handle))
 
-    # ежедневная проверка
-    app.job_queue.run_daily(
-        check_expiry,
-        time=datetime.now().time(),
-        data=None,
-        name="check",
-        chat_id=568554255  # ← твой ID
-    )
+    # 🔥 ФОН БЕЗ JOBQUEUE
+    asyncio.create_task(background_checker(app))
 
-    app.run_polling()
+    print("🚀 Бот запущен")
+    await app.run_polling()
 
-
+# ================= ЗАПУСК =================
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
