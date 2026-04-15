@@ -1,7 +1,7 @@
 import logging
 import os
 import json
-from datetime import datetime
+from datetime import datetime, time
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -20,17 +20,16 @@ from google.oauth2.service_account import Credentials
 TOKEN = os.environ["BOT_TOKEN"]
 SHEET_ID = os.environ["SHEET_ID"]
 
+MY_CHAT_ID = 568554255  # 👈 ТВОЙ ID
+
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
-# ================= GOOGLE SHEETS =================
+# ================= GOOGLE =================
 
 creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
-
 sheet = client.open_by_key(SHEET_ID).sheet1
-
-# ================= ЛОГИ =================
 
 logging.basicConfig(level=logging.INFO)
 
@@ -40,17 +39,57 @@ keyboard = ReplyKeyboardMarkup(
     [
         ["🔍 Поиск"],
         ["📅 По месяцу"],
+        ["📢 Проверить сейчас"],
     ],
     resize_keyboard=True
 )
 
-# ================= КОМАНДА /start =================
+# ================= СТАРТ =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Бот готов к работе 👌\nВыбери действие:",
+        "Бот работает 👌\nВыбери действие:",
         reply_markup=keyboard
     )
+
+# ================= НАПОМИНАНИЯ =================
+
+async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
+    data = sheet.get_all_records()
+    today = datetime.today()
+
+    for row in data:
+        try:
+            date_str = str(row.get("Дата окончания", "")).strip()
+
+            date_obj = None
+            for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y"):
+                try:
+                    date_obj = datetime.strptime(date_str, fmt)
+                    break
+                except:
+                    continue
+
+            if not date_obj:
+                continue
+
+            days_left = (date_obj - today).days
+
+            if days_left in [30, 15, 7] or days_left <= 0:
+                msg = (
+                    f"⚠️ Срок заканчивается!\n\n"
+                    f"👤 {row.get('ФИО')}\n"
+                    f"📅 До: {date_str}\n"
+                    f"⏳ Осталось: {days_left} дней"
+                )
+
+                await context.bot.send_message(
+                    chat_id=MY_CHAT_ID,
+                    text=msg
+                )
+
+        except:
+            continue
 
 # ================= ПОИСК ПО ФИО =================
 
@@ -62,7 +101,6 @@ async def search_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for row in data:
         fio = str(row.get("ФИО", "")).lower()
-
         if text in fio:
             found.append(row)
 
@@ -114,12 +152,7 @@ async def search_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for row in data:
         date_str = str(row.get("Дата окончания", "")).strip()
 
-        if not date_str:
-            continue
-
         date_obj = None
-
-        # поддержка разных форматов даты
         for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y"):
             try:
                 date_obj = datetime.strptime(date_str, fmt)
@@ -147,19 +180,24 @@ async def search_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(msg)
 
-# ================= ОБРАБОТКА КНОПОК =================
+# ================= ОБРАБОТКА =================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     if text == "🔍 Поиск":
         context.user_data["mode"] = "search"
-        await update.message.reply_text("Введите ФИО или часть:")
+        await update.message.reply_text("Введите ФИО:")
         return
 
     if text == "📅 По месяцу":
         context.user_data["mode"] = "month"
-        await update.message.reply_text("Введите месяц (например: июль или 7):")
+        await update.message.reply_text("Введите месяц:")
+        return
+
+    if text == "📢 Проверить сейчас":
+        await check_expirations(context)
+        await update.message.reply_text("Проверка выполнена ✅")
         return
 
     mode = context.user_data.get("mode")
@@ -178,6 +216,12 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # ⏰ КАЖДЫЙ ДЕНЬ В 09:00
+    app.job_queue.run_daily(
+        check_expirations,
+        time=time(hour=9, minute=0),
+    )
 
     print("Бот запущен 🚀")
     app.run_polling()
