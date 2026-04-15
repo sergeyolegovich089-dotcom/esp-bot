@@ -20,7 +20,7 @@ from telegram.ext import (
     filters,
 )
 
-print("🔥 FINAL STABLE VERSION")
+print("🔥 COLOR STATUS VERSION")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -109,7 +109,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
 
-    # ГОРОД → МЕСЯЦ
     if data.startswith("city:"):
         city = data.split(":")[1]
 
@@ -118,7 +117,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_month_buttons(city)
         )
 
-    # МЕСЯЦ → СПИСОК
     elif data.startswith("month:"):
         _, city, month = data.split(":")
         month = int(month)
@@ -140,15 +138,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
 
-# ================== ПРОВЕРКА ==================
+# ================== ЦВЕТНАЯ ПРОВЕРКА ==================
 async def check_now(update, context):
     data = get_data()
     today = datetime.now()
 
-    result = []
+    red, orange, yellow = [], [], []
 
     for row in data:
         name = row.get("ФИО", "")
+        position = row.get("Должность", "")
+        city = row.get("Город", "")
         date_str = row.get("Дата окончания", "")
 
         d = parse_date(date_str)
@@ -157,11 +157,42 @@ async def check_now(update, context):
 
         days = (d - today).days
 
-        if days <= 30:
-            result.append(f"⚠️ {name} — {date_str} ({days} дн.)")
+        info = (
+            f"👤 {name}\n"
+            f"🏢 {position}\n"
+            f"🏙 {city}\n"
+            f"📅 {date_str} ({days} дн.)"
+        )
 
-    if result:
-        await update.message.reply_text("\n".join(result))
+        if days < 0:
+            red.append(info)
+        elif days <= 7:
+            orange.append(info)
+        elif days <= 30:
+            yellow.append(info)
+
+    blocks = []
+
+    if red:
+        blocks.append(
+            "━━━━━━━━━━━━━━\n🔴🔴🔴 ПРОСРОЧЕНО 🚨\n━━━━━━━━━━━━━━\n"
+            + "\n\n".join(red)
+        )
+
+    if orange:
+        blocks.append(
+            "━━━━━━━━━━━━━━\n🟠🟠 СРОЧНО ⚠️\n━━━━━━━━━━━━━━\n"
+            + "\n\n".join(orange)
+        )
+
+    if yellow:
+        blocks.append(
+            "━━━━━━━━━━━━━━\n🟡 ВНИМАНИЕ\n━━━━━━━━━━━━━━\n"
+            + "\n\n".join(yellow)
+        )
+
+    if blocks:
+        await update.message.reply_text("\n\n".join(blocks))
     else:
         await update.message.reply_text("😎 Олегыч, всё под контролем")
 
