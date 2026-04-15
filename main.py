@@ -74,11 +74,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📌 Функции:\n"
         "🔍 Найти сотрудника — поиск по ФИО\n"
-        "📅 По месяцу — кто скоро заканчивается"
+        "📅 По месяцу — кто заканчивается в выбранном месяце"
     )
 
 # =========================
-# 🔘 ОБРАБОТКА КНОПОК
+# 🔘 ОБРАБОТКА
 # =========================
 
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -101,7 +101,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # =========================
-    # 🔍 ПОИСК ПО ФИО (УМНЫЙ)
+    # 🔍 ПОИСК ПО ФИО
     # =========================
 
     if user_states.get(user_id) == "waiting_name":
@@ -115,12 +115,10 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for row in data:
             fio = str(row.get("ФИО", "")).lower()
 
-            # точное вхождение
             if query in fio:
                 results.append((row, 1.0))
                 continue
 
-            # нечёткий поиск
             matches = get_close_matches(query, fio.split(), n=1, cutoff=0.6)
             if matches:
                 results.append((row, 0.7))
@@ -145,7 +143,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # =========================
-    # 📅 ПОИСК ПО МЕСЯЦУ
+    # 📅 ПО МЕСЯЦУ (FIX ПОД ТЕБЯ)
     # =========================
 
     if user_states.get(user_id) == "waiting_month":
@@ -179,7 +177,7 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for row in data:
             try:
                 date_str = row.get("Дата окончания", "")
-                date_obj = datetime.strptime(date_str, "%d.%m.%Y")
+                date_obj = datetime.strptime(date_str, "%Y-%m-%d")  # 👈 ВАЖНО
 
                 if date_obj.month == target_month:
                     results.append(row)
@@ -216,7 +214,6 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
-
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
 
     print("✅ Бот запущен")
