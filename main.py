@@ -21,7 +21,7 @@ from telegram.ext import (
     filters,
 )
 
-print("🔥 VERSION WITH INLINE CITY BUTTONS")
+print("🔥 FINAL PRO VERSION")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -54,20 +54,14 @@ def parse_date(date_str):
 # ================== ГОРОДА ==================
 def get_cities():
     data = get_data()
-    cities = set()
+    return sorted({row.get("Город", "").strip() for row in data if row.get("Город")})
 
-    for row in data:
-        city = row.get("Город", "")
-        if city:
-            cities.add(city.strip())
-
-    return sorted(list(cities))
-
-# ================== ЛОГИКА ==================
+# ================== ЛОГИКА С БЛОКАМИ ==================
 def check_logic():
     data = get_data()
     today = datetime.now()
-    result = []
+
+    expired, urgent, soon = [], [], []
 
     for row in data:
         name = row.get("ФИО", "")
@@ -85,12 +79,47 @@ def check_logic():
 
         days = (d - today).days
 
-        if days <= 30:
-            msg = f"👤 {name}\n🏢 {position}\n🏙 {city}\n📅 {date_str} ({days} дн.)"
-            result.append((days, msg))
+        info = (
+            f"👤 {name}\n"
+            f"🏢 {position}\n"
+            f"🏙 {city}\n"
+            f"📅 {date_str} ({days} дн.)"
+        )
 
-    result.sort(key=lambda x: x[0])
-    return [r[1] for r in result]
+        if days < 0:
+            expired.append(info)
+        elif days <= 7:
+            urgent.append(info)
+        elif days <= 30:
+            soon.append(info)
+
+    blocks = []
+
+    if expired:
+        blocks.append(
+            "━━━━━━━━━━━━━━\n"
+            "🔴🔴🔴 ПРОСРОЧЕНО\n"
+            "━━━━━━━━━━━━━━\n"
+            + "\n\n".join(expired)
+        )
+
+    if urgent:
+        blocks.append(
+            "━━━━━━━━━━━━━━\n"
+            "🟠🟠 СРОЧНО (до 7 дней)\n"
+            "━━━━━━━━━━━━━━\n"
+            + "\n\n".join(urgent)
+        )
+
+    if soon:
+        blocks.append(
+            "━━━━━━━━━━━━━━\n"
+            "🟡 В ТЕЧЕНИЕ 30 ДНЕЙ\n"
+            "━━━━━━━━━━━━━━\n"
+            + "\n\n".join(soon)
+        )
+
+    return blocks
 
 # ================== ПРОДЛЕНИЕ ==================
 def mark_extended(name):
@@ -123,7 +152,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.application.bot_data["chat_ids"].add(update.effective_chat.id)
     await update.message.reply_text("Выбери действие 👇", reply_markup=keyboard)
 
-# ================== INLINE ГОРОДА ==================
+# ================== ГОРОДА INLINE ==================
 async def show_cities(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cities = get_cities()
 
@@ -144,7 +173,6 @@ async def show_cities(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
-# ================== ОБРАБОТКА НАЖАТИЯ ==================
 async def city_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -164,6 +192,30 @@ async def city_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = check_logic()
     await update.message.reply_text("\n\n".join(res) or "😎 Олегыч, всё тихо")
+
+# ================== SCHEDULER ==================
+last_sent = set()
+last_day = None
+
+async def scheduler(app):
+    global last_sent, last_day
+
+    await asyncio.sleep(5)
+
+    while True:
+        now = datetime.now()
+
+        if now.hour >= 11 and last_day != now.date():
+            result = check_logic()
+            text = "\n\n".join(result) if result else "😎 Олегыч, всё тихо"
+
+            for chat_id in app.bot_data["chat_ids"]:
+                await app.bot.send_message(chat_id, text)
+
+            last_sent = set(result)
+            last_day = now.date()
+
+        await asyncio.sleep(60)
 
 # ================== ОБРАБОТКА ==================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -211,6 +263,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(city_callback, pattern="^city:"))
     app.add_handler(MessageHandler(filters.TEXT, text_handler))
+
+    async def on_start(app):
+        asyncio.create_task(scheduler(app))
+
+    app.post_init = on_start
 
     print("🚀 BOT STARTED")
     app.run_polling()
