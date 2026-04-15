@@ -44,7 +44,7 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ================= КОМАНДЫ =================
+# ================= КОМАНДА /start =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -80,7 +80,7 @@ async def search_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(msg)
 
-# ================= ПОИСК ПО МЕСЯЦУ =================
+# ================= МЕСЯЦЫ =================
 
 MONTHS = {
     "1": 1, "январь": 1,
@@ -97,6 +97,8 @@ MONTHS = {
     "12": 12, "декабрь": 12,
 }
 
+# ================= ПОИСК ПО МЕСЯЦУ =================
+
 async def search_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower().strip()
 
@@ -110,14 +112,26 @@ async def search_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     found = []
 
     for row in data:
-        date_str = str(row.get("Дата окончания", ""))
+        date_str = str(row.get("Дата окончания", "")).strip()
 
-        try:
-            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-            if date_obj.month == month:
-                found.append(row)
-        except:
+        if not date_str:
             continue
+
+        date_obj = None
+
+        # поддержка разных форматов даты
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d.%m.%Y"):
+            try:
+                date_obj = datetime.strptime(date_str, fmt)
+                break
+            except:
+                continue
+
+        if not date_obj:
+            continue
+
+        if date_obj.month == month:
+            found.append(row)
 
     if not found:
         await update.message.reply_text("❌ Ничего не найдено")
