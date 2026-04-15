@@ -7,20 +7,17 @@ from google.oauth2.service_account import Credentials
 
 from telegram import (
     Update,
-    ReplyKeyboardMarkup,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
     ContextTypes,
-    filters,
 )
 
-print("✅ STABLE VERSION WITH JOB QUEUE")
+print("🔥 UI APP VERSION")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -52,40 +49,20 @@ def parse_date(date_str):
             continue
     return None
 
-# ================== ГОРОДА ==================
-def get_cities():
-    return sorted({
-        row.get("Город", "").strip()
-        for row in get_data()
-        if row.get("Город")
-    })
+# ================== UI ==================
+def main_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏙 По городу", callback_data="cities")],
+        [InlineKeyboardButton("📅 По месяцу", callback_data="months")],
+        [InlineKeyboardButton("🔍 Поиск", callback_data="search")],
+        [InlineKeyboardButton("📋 Показать всё", callback_data="all")],
+        [InlineKeyboardButton("⚡ Проверить сейчас", callback_data="check")],
+    ])
 
-# ================== МЕСЯЦЫ ==================
-def get_month_buttons():
-    months = [
-        ("Янв",1),("Фев",2),("Мар",3),("Апр",4),
-        ("Май",5),("Июн",6),("Июл",7),("Авг",8),
-        ("Сен",9),("Окт",10),("Ноя",11),("Дек",12)
-    ]
-
-    buttons = []
-    for i in range(0, len(months), 3):
-        row = []
-        for m in months[i:i+3]:
-            row.append(InlineKeyboardButton(m[0], callback_data=f"month:{m[1]}"))
-        buttons.append(row)
-
-    return InlineKeyboardMarkup(buttons)
-
-# ================== КНОПКИ ==================
-keyboard = ReplyKeyboardMarkup(
-    [
-        ["🏙 По городу", "📅 По месяцу"],
-        ["🔍 Поиск", "📋 Показать всё"],
-        ["⚡ Проверить сейчас"],
-    ],
-    resize_keyboard=True,
-)
+def back_button():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
+    ])
 
 # ================== СТАТУСЫ ==================
 def build_status_text():
@@ -127,13 +104,25 @@ def build_status_text():
     return text.strip()
 
 # ================== CALLBACK ==================
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     data = query.data
 
-    if data.startswith("city:"):
+    # ГЛАВНОЕ МЕНЮ
+    if data == "menu":
+        await query.edit_message_text("Выбери действие 👇", reply_markup=main_menu())
+
+    # ГОРОДА
+    elif data == "cities":
+        cities = sorted({r.get("Город") for r in get_data() if r.get("Город")})
+        buttons = [[InlineKeyboardButton(c, callback_data=f"city:{c}")] for c in cities]
+        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
+
+        await query.edit_message_text("Выбери город:", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data.startswith("city:"):
         city = data.split(":")[1].lower()
 
         result = [
@@ -142,7 +131,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if city in r.get("Город", "").lower()
         ]
 
-        await query.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
+        text = "\n\n".join(result) or "❌ Ничего не найдено"
+
+        await query.edit_message_text(text, reply_markup=back_button())
+
+    # МЕСЯЦЫ
+    elif data == "months":
+        months = [
+            ("Янв",1),("Фев",2),("Мар",3),("Апр",4),
+            ("Май",5),("Июн",6),("Июл",7),("Авг",8),
+            ("Сен",9),("Окт",10),("Ноя",11),("Дек",12)
+        ]
+
+        buttons = []
+        for i in range(0, 12, 3):
+            row = [InlineKeyboardButton(m[0], callback_data=f"month:{m[1]}") for m in months[i:i+3]]
+            buttons.append(row)
+
+        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
+
+        await query.edit_message_text("Выбери месяц:", reply_markup=InlineKeyboardMarkup(buttons))
 
     elif data.startswith("month:"):
         month = int(data.split(":")[1])
@@ -155,42 +163,37 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n🏙 {r.get('Город')}\n📅 {r.get('Дата окончания')}"
                 )
 
-        await query.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
+        text = "\n\n".join(result) or "❌ Ничего не найдено"
 
-# ================== КОМАНДЫ ==================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CHAT_ID
-    CHAT_ID = update.effective_chat.id
-    await update.message.reply_text("Бот готов 👇", reply_markup=keyboard)
+        await query.edit_message_text(text, reply_markup=back_button())
 
-async def check_now(update, context):
-    text = build_status_text()
-    await update.message.reply_text(text or "😎 Олегыч, всё под контролем")
+    # ВСЕ
+    elif data == "all":
+        data_rows = get_data()
 
-async def show_all(update, context):
-    data = get_data()
-    res = [
-        f"🏙 {r.get('Город')}\n👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n📅 {r.get('Дата окончания')}"
-        for r in data
-    ]
-    await update.message.reply_text("\n\n".join(res[:50]) or "Нет данных")
+        result = [
+            f"🏙 {r.get('Город')}\n👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n📅 {r.get('Дата окончания')}"
+            for r in data_rows
+        ]
 
-async def show_cities(update, context):
-    cities = get_cities()
-    buttons = [[InlineKeyboardButton(c, callback_data=f"city:{c}")] for c in cities]
-    await update.message.reply_text("Выбери город:", reply_markup=InlineKeyboardMarkup(buttons))
+        await query.edit_message_text("\n\n".join(result[:50]) or "Нет данных", reply_markup=back_button())
 
-# ================== ПОИСК ==================
-async def text_handler(update, context):
-    text = update.message.text.lower()
+    # ПРОВЕРКА
+    elif data == "check":
+        text = build_status_text() or "😎 Олегыч, всё под контролем"
+        await query.edit_message_text(text, reply_markup=back_button())
 
-    if text == "🔍 поиск":
-        context.user_data["mode"] = "search"
-        await update.message.reply_text("Введи фамилию или имя")
-        return
+    # ПОИСК
+    elif data == "search":
+        context.user_data["search"] = True
+        await query.edit_message_text("Введи фамилию или имя:")
 
-    if context.user_data.get("mode") == "search":
-        context.user_data["mode"] = None
+# ================== ПОИСК ТЕКСТОМ ==================
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("search"):
+        context.user_data["search"] = False
+
+        text = update.message.text.lower()
 
         result = [
             f"👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n🏙 {r.get('Город')}\n📅 {r.get('Дата окончания')}"
@@ -198,40 +201,30 @@ async def text_handler(update, context):
             if text in r.get("ФИО", "").lower()
         ]
 
-        await update.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
-        return
+        await update.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено", reply_markup=main_menu())
 
-    if text == "🏙 по городу":
-        await show_cities(update, context)
+# ================== START ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CHAT_ID
+    CHAT_ID = update.effective_chat.id
 
-    elif text == "📅 по месяцу":
-        await update.message.reply_text("Выбери месяц:", reply_markup=get_month_buttons())
+    await update.message.reply_text("Выбери действие 👇", reply_markup=main_menu())
 
-    elif text == "⚡ проверить сейчас":
-        await check_now(update, context)
-
-    elif text == "📋 показать всё":
-        await show_all(update, context)
-
-# ================== АВТОУВЕДОМЛЕНИЕ ==================
+# ================== АВТО ==================
 async def notify(context: ContextTypes.DEFAULT_TYPE):
     if CHAT_ID:
-        text = build_status_text()
-        await context.bot.send_message(
-            chat_id=CHAT_ID,
-            text=text or "😎 Олегыч, всё под контролем"
-        )
+        text = build_status_text() or "😎 Олегыч, всё под контролем"
+        await context.bot.send_message(chat_id=CHAT_ID, text=text)
 
 # ================== MAIN ==================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(MessageHandler(filters.TEXT, text_handler))
+    app.add_handler(CallbackQueryHandler(callback))
+    app.add_handler(MessageHandler(filters.TEXT, message_handler))
 
-    # ⏰ каждый день в 11:00
-    app.job_queue.run_daily(notify, time=time(hour=11, minute=0))
+    app.job_queue.run_daily(notify, time(hour=11, minute=0))
 
     print("🚀 BOT STARTED")
     app.run_polling()
