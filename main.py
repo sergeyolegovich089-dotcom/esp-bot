@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 from datetime import datetime, time
 
 import gspread
@@ -21,13 +20,13 @@ from telegram.ext import (
     filters,
 )
 
-print("🔥 FINAL FULL VERSION")
+print("✅ STABLE VERSION WITH JOB QUEUE")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS")
 
-CHAT_ID = None  # сюда запишется твой ID
+CHAT_ID = None
 
 # ================== GOOGLE ==================
 def get_sheet():
@@ -41,7 +40,7 @@ def get_data():
     try:
         return get_sheet().get_all_records()
     except Exception as e:
-        print("❌ Google error:", e)
+        print("❌ Google:", e)
         return []
 
 # ================== ДАТЫ ==================
@@ -88,59 +87,6 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-# ================== ГОРОДА ==================
-async def show_cities(update, context):
-    cities = get_cities()
-    buttons = []
-
-    for i in range(0, len(cities), 2):
-        row = [InlineKeyboardButton(cities[i], callback_data=f"city:{cities[i]}")]
-        if i + 1 < len(cities):
-            row.append(InlineKeyboardButton(cities[i+1], callback_data=f"city:{cities[i+1]}"))
-        buttons.append(row)
-
-    await update.message.reply_text("Выбери город:", reply_markup=InlineKeyboardMarkup(buttons))
-
-# ================== CALLBACK ==================
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-
-    # ГОРОД
-    if data.startswith("city:"):
-        city = data.split(":")[1].lower()
-
-        result = []
-        for row in get_data():
-            if city in row.get("Город", "").lower():
-                result.append(
-                    f"🏙 {row.get('Город')}\n"
-                    f"👤 {row.get('ФИО')}\n"
-                    f"🏢 {row.get('Должность')}\n"
-                    f"📅 {row.get('Дата окончания')}"
-                )
-
-        await query.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
-
-    # МЕСЯЦ
-    elif data.startswith("month:"):
-        month = int(data.split(":")[1])
-
-        result = []
-        for row in get_data():
-            d = parse_date(row.get("Дата окончания", ""))
-            if d and d.month == month:
-                result.append(
-                    f"👤 {row.get('ФИО')}\n"
-                    f"🏢 {row.get('Должность')}\n"
-                    f"🏙 {row.get('Город')}\n"
-                    f"📅 {row.get('Дата окончания')}"
-                )
-
-        await query.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
-
 # ================== СТАТУСЫ ==================
 def build_status_text():
     data = get_data()
@@ -180,50 +126,61 @@ def build_status_text():
 
     return text.strip()
 
-# ================== ПРОВЕРКА ==================
+# ================== CALLBACK ==================
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+
+    if data.startswith("city:"):
+        city = data.split(":")[1].lower()
+
+        result = [
+            f"🏙 {r.get('Город')}\n👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n📅 {r.get('Дата окончания')}"
+            for r in get_data()
+            if city in r.get("Город", "").lower()
+        ]
+
+        await query.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
+
+    elif data.startswith("month:"):
+        month = int(data.split(":")[1])
+
+        result = []
+        for r in get_data():
+            d = parse_date(r.get("Дата окончания", ""))
+            if d and d.month == month:
+                result.append(
+                    f"👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n🏙 {r.get('Город')}\n📅 {r.get('Дата окончания')}"
+                )
+
+        await query.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
+
+# ================== КОМАНДЫ ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CHAT_ID
+    CHAT_ID = update.effective_chat.id
+    await update.message.reply_text("Бот готов 👇", reply_markup=keyboard)
+
 async def check_now(update, context):
     text = build_status_text()
+    await update.message.reply_text(text or "😎 Олегыч, всё под контролем")
 
-    if text:
-        await update.message.reply_text(text)
-    else:
-        await update.message.reply_text("😎 Олегыч, всё под контролем")
-
-# ================== АВТОУВЕДОМЛЕНИЕ ==================
-async def auto_notify(app):
-    global CHAT_ID
-
-    while True:
-        now = datetime.now()
-
-        if now.hour == 11 and now.minute == 0:
-            if CHAT_ID:
-                text = build_status_text()
-
-                if not text:
-                    text = "😎 Олегыч, всё под контролем"
-
-                await app.bot.send_message(chat_id=CHAT_ID, text=text)
-
-            await asyncio.sleep(60)
-
-        await asyncio.sleep(20)
-
-# ================== ПОКАЗАТЬ ВСЁ ==================
 async def show_all(update, context):
     data = get_data()
-
-    result = [
-        f"🏙 {r.get('Город')}\n"
-        f"👤 {r.get('ФИО')}\n"
-        f"🏢 {r.get('Должность')}\n"
-        f"📅 {r.get('Дата окончания')}"
+    res = [
+        f"🏙 {r.get('Город')}\n👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n📅 {r.get('Дата окончания')}"
         for r in data
     ]
+    await update.message.reply_text("\n\n".join(res[:50]) or "Нет данных")
 
-    await update.message.reply_text("\n\n".join(result[:50]) or "Нет данных")
+async def show_cities(update, context):
+    cities = get_cities()
+    buttons = [[InlineKeyboardButton(c, callback_data=f"city:{c}")] for c in cities]
+    await update.message.reply_text("Выбери город:", reply_markup=InlineKeyboardMarkup(buttons))
 
-# ================== ОБРАБОТКА ==================
+# ================== ПОИСК ==================
 async def text_handler(update, context):
     text = update.message.text.lower()
 
@@ -256,12 +213,14 @@ async def text_handler(update, context):
     elif text == "📋 показать всё":
         await show_all(update, context)
 
-# ================== START ==================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CHAT_ID
-    CHAT_ID = update.effective_chat.id
-
-    await update.message.reply_text("Бот готов 👇", reply_markup=keyboard)
+# ================== АВТОУВЕДОМЛЕНИЕ ==================
+async def notify(context: ContextTypes.DEFAULT_TYPE):
+    if CHAT_ID:
+        text = build_status_text()
+        await context.bot.send_message(
+            chat_id=CHAT_ID,
+            text=text or "😎 Олегыч, всё под контролем"
+        )
 
 # ================== MAIN ==================
 def main():
@@ -271,7 +230,8 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT, text_handler))
 
-    app.create_task(auto_notify(app))
+    # ⏰ каждый день в 11:00
+    app.job_queue.run_daily(notify, time=time(hour=11, minute=0))
 
     print("🚀 BOT STARTED")
     app.run_polling()
