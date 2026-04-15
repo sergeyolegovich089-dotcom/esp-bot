@@ -6,16 +6,22 @@ from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
 
-print("✅ VERSION WITH CITY FILTER")
+print("🔥 VERSION WITH INLINE CITY BUTTONS")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -38,15 +44,24 @@ def get_data():
 
 # ================== ДАТЫ ==================
 def parse_date(date_str):
-    if not date_str:
-        return None
-
     for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
         try:
             return datetime.strptime(str(date_str), fmt)
         except:
             continue
     return None
+
+# ================== ГОРОДА ==================
+def get_cities():
+    data = get_data()
+    cities = set()
+
+    for row in data:
+        city = row.get("Город", "")
+        if city:
+            cities.add(city.strip())
+
+    return sorted(list(cities))
 
 # ================== ЛОГИКА ==================
 def check_logic():
@@ -70,31 +85,12 @@ def check_logic():
 
         days = (d - today).days
 
-        if days == 0:
-            msg = f"⚠️ СЕГОДНЯ:\n👤 {name}\n🏢 {position}\n🏙 {city}\n📅 {date_str}"
-        elif days < 0:
-            msg = f"🚨 ПРОСРОЧЕНО:\n👤 {name}\n🏢 {position}\n🏙 {city}\n📅 {date_str} ({abs(days)} дн.)"
-        elif days in [30, 16, 7]:
-            msg = f"⚠️ Через {days} дн.:\n👤 {name}\n🏢 {position}\n🏙 {city}\n📅 {date_str}"
-        else:
-            continue
-
-        result.append((days, msg))
+        if days <= 30:
+            msg = f"👤 {name}\n🏢 {position}\n🏙 {city}\n📅 {date_str} ({days} дн.)"
+            result.append((days, msg))
 
     result.sort(key=lambda x: x[0])
     return [r[1] for r in result]
-
-# ================== ГОРОДА ==================
-def get_cities():
-    data = get_data()
-    cities = set()
-
-    for row in data:
-        city = row.get("Город", "")
-        if city:
-            cities.add(city.strip())
-
-    return sorted(list(cities))
 
 # ================== ПРОДЛЕНИЕ ==================
 def mark_extended(name):
@@ -127,104 +123,56 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.application.bot_data["chat_ids"].add(update.effective_chat.id)
     await update.message.reply_text("Выбери действие 👇", reply_markup=keyboard)
 
+# ================== INLINE ГОРОДА ==================
+async def show_cities(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cities = get_cities()
+
+    buttons = []
+    row = []
+
+    for i, city in enumerate(cities, 1):
+        row.append(InlineKeyboardButton(city, callback_data=f"city:{city}"))
+        if i % 2 == 0:
+            buttons.append(row)
+            row = []
+
+    if row:
+        buttons.append(row)
+
+    await update.message.reply_text(
+        "Выбери город:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+# ================== ОБРАБОТКА НАЖАТИЯ ==================
+async def city_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    city = query.data.split(":")[1].lower()
+
+    res = []
+    for row in get_data():
+        if city in row.get("Город", "").lower():
+            res.append(
+                f"🏙 {row.get('Город')}\n👤 {row.get('ФИО')}\n🏢 {row.get('Должность')}\n📅 {row.get('Дата окончания')}"
+            )
+
+    await query.message.reply_text("\n\n".join(res) or "❌ Ничего не найдено")
+
 # ================== ПРОВЕРКА ==================
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = check_logic()
     await update.message.reply_text("\n\n".join(res) or "😎 Олегыч, всё тихо")
-
-# ================== ПРОДЛИТЬ ==================
-async def extend_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["mode"] = "extend"
-    await update.message.reply_text("Введи фамилию для продления")
-
-# ================== ПЛАНИРОВЩИК ==================
-last_sent = set()
-last_send_day = None
-
-async def scheduler(app):
-    global last_sent, last_send_day
-
-    await asyncio.sleep(5)
-
-    while True:
-        now = datetime.now()
-
-        if now.hour >= 11 and last_send_day != now.date():
-            print("📨 Отправка уведомлений")
-
-            result = check_logic()
-            new_msgs = [r for r in result if r not in last_sent]
-
-            text = "\n\n".join(new_msgs) if new_msgs else "😎 Олегыч, всё тихо"
-
-            for chat_id in app.bot_data["chat_ids"]:
-                await app.bot.send_message(chat_id, text)
-
-            last_sent = set(result)
-            last_send_day = now.date()
-
-        await asyncio.sleep(60)
 
 # ================== ОБРАБОТКА ==================
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
     context.application.bot_data["chat_ids"].add(update.effective_chat.id)
 
-    # ===== ГОРОД =====
-    if context.user_data.get("mode") == "city":
-        context.user_data["mode"] = None
-
-        city_input = text
-
-        res = []
-        for row in get_data():
-            if city_input in row.get("Город", "").lower():
-                res.append(
-                    f"🏙 {row.get('Город')}\n👤 {row.get('ФИО')}\n🏢 {row.get('Должность')}\n📅 {row.get('Дата окончания')}"
-                )
-
-        await update.message.reply_text("\n\n".join(res) or "❌ Ничего не найдено")
-        return
-
-    # ===== ПРОДЛЕНИЕ =====
-    if context.user_data.get("mode") == "extend":
-        context.user_data["mode"] = None
-
-        if mark_extended(text):
-            await update.message.reply_text("✅ Отмечено как продлено")
-        else:
-            await update.message.reply_text("❌ Не найдено")
-        return
-
-    # ===== МЕСЯЦ =====
-    if context.user_data.get("mode") == "month":
-        context.user_data["mode"] = None
-
-        months = {
-            "январь":1,"февраль":2,"март":3,"апрель":4,
-            "май":5,"июнь":6,"июль":7,"август":8,
-            "сентябрь":9,"октябрь":10,"ноябрь":11,"декабрь":12
-        }
-
-        month = months.get(text) or (int(text) if text.isdigit() else None)
-
-        res = []
-        for row in get_data():
-            d = parse_date(row.get("Дата окончания", ""))
-            if d and d.month == month:
-                res.append(
-                    f"👤 {row.get('ФИО')}\n🏢 {row.get('Должность')}\n🏙 {row.get('Город')}\n📅 {row.get('Дата окончания')}"
-                )
-
-        await update.message.reply_text("\n\n".join(res) or "❌ Ничего не найдено")
-        return
-
-    # ===== КНОПКИ =====
     if text == "🏙 по городу":
-        context.user_data["mode"] = "city"
-        cities = get_cities()
-        await update.message.reply_text("Выбери город:\n" + "\n".join(cities))
-    
+        await show_cities(update, context)
+
     elif text == "⚡ проверить сейчас":
         await check_now(update, context)
 
@@ -236,15 +184,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await update.message.reply_text("\n\n".join(res[:50]) or "Нет данных")
 
-    elif text == "📅 по месяцу":
-        context.user_data["mode"] = "month"
-        await update.message.reply_text("Введи месяц")
-
     elif text == "🔍 поиск":
         await update.message.reply_text("Введи фамилию или имя")
 
+    elif text == "📅 по месяцу":
+        await update.message.reply_text("Введи месяц")
+
     elif text == "✅ продлить":
-        await extend_mode(update, context)
+        await update.message.reply_text("Введи фамилию")
 
     else:
         data = get_data()
@@ -262,13 +209,8 @@ def main():
     app.bot_data["chat_ids"] = set()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(city_callback, pattern="^city:"))
     app.add_handler(MessageHandler(filters.TEXT, text_handler))
-
-    async def on_start(app):
-        print("📡 Scheduler started")
-        asyncio.create_task(scheduler(app))
-
-    app.post_init = on_start
 
     print("🚀 BOT STARTED")
     app.run_polling()
