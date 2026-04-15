@@ -20,7 +20,7 @@ from telegram.ext import (
     filters,
 )
 
-print("🔥 CITY → MONTH → LIST VERSION")
+print("🔥 FINAL STABLE VERSION")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -37,7 +37,8 @@ def get_sheet():
 def get_data():
     try:
         return get_sheet().get_all_records()
-    except:
+    except Exception as e:
+        print("❌ Google error:", e)
         return []
 
 # ================== ДАТЫ ==================
@@ -57,23 +58,6 @@ def get_cities():
         if row.get("Город")
     })
 
-# ================== МЕСЯЦЫ ==================
-def get_month_buttons(city):
-    months = [
-        ("Янв",1),("Фев",2),("Мар",3),("Апр",4),
-        ("Май",5),("Июн",6),("Июл",7),("Авг",8),
-        ("Сен",9),("Окт",10),("Ноя",11),("Дек",12)
-    ]
-
-    buttons = []
-    for i in range(0, len(months), 3):
-        row = []
-        for m in months[i:i+3]:
-            row.append(InlineKeyboardButton(m[0], callback_data=f"month:{city}:{m[1]}"))
-        buttons.append(row)
-
-    return InlineKeyboardMarkup(buttons)
-
 # ================== КНОПКИ ==================
 keyboard = ReplyKeyboardMarkup(
     [
@@ -91,13 +75,32 @@ async def show_cities(update, context):
     for i in range(0, len(cities), 2):
         row = [InlineKeyboardButton(cities[i], callback_data=f"city:{cities[i]}")]
         if i + 1 < len(cities):
-            row.append(InlineKeyboardButton(cities[i+1], callback_data=f"city:{cities[i+1]}"))
+            row.append(
+                InlineKeyboardButton(cities[i + 1], callback_data=f"city:{cities[i+1]}")
+            )
         buttons.append(row)
 
     await update.message.reply_text(
         "Выбери город:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
+
+# ================== МЕСЯЦЫ ==================
+def get_month_buttons(city):
+    months = [
+        ("Янв",1),("Фев",2),("Мар",3),("Апр",4),
+        ("Май",5),("Июн",6),("Июл",7),("Авг",8),
+        ("Сен",9),("Окт",10),("Ноя",11),("Дек",12)
+    ]
+
+    buttons = []
+    for i in range(0, len(months), 3):
+        row = []
+        for m in months[i:i+3]:
+            row.append(InlineKeyboardButton(m[0], callback_data=f"month:{city}:{m[1]}"))
+        buttons.append(row)
+
+    return InlineKeyboardMarkup(buttons)
 
 # ================== CALLBACK ==================
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -106,7 +109,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
 
-    # 1. ВЫБРАЛ ГОРОД → ПОКАЗАТЬ МЕСЯЦЫ
+    # ГОРОД → МЕСЯЦ
     if data.startswith("city:"):
         city = data.split(":")[1]
 
@@ -115,12 +118,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_month_buttons(city)
         )
 
-    # 2. ВЫБРАЛ МЕСЯЦ → ПОКАЗАТЬ СОТРУДНИКОВ
+    # МЕСЯЦ → СПИСОК
     elif data.startswith("month:"):
         _, city, month = data.split(":")
         month = int(month)
 
-        res = []
+        result = []
 
         for row in get_data():
             d = parse_date(row.get("Дата окончания", ""))
@@ -128,18 +131,53 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             if city.lower() in row.get("Город", "").lower() and d.month == month:
-                res.append(
+                result.append(
                     f"🏙 {row.get('Город')}\n"
                     f"👤 {row.get('ФИО')}\n"
                     f"🏢 {row.get('Должность')}\n"
                     f"📅 {row.get('Дата окончания')}"
                 )
 
-        await query.message.reply_text("\n\n".join(res) or "❌ Ничего не найдено")
+        await query.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
 
 # ================== ПРОВЕРКА ==================
 async def check_now(update, context):
-    await update.message.reply_text("Проверка работает 👍")
+    data = get_data()
+    today = datetime.now()
+
+    result = []
+
+    for row in data:
+        name = row.get("ФИО", "")
+        date_str = row.get("Дата окончания", "")
+
+        d = parse_date(date_str)
+        if not d:
+            continue
+
+        days = (d - today).days
+
+        if days <= 30:
+            result.append(f"⚠️ {name} — {date_str} ({days} дн.)")
+
+    if result:
+        await update.message.reply_text("\n".join(result))
+    else:
+        await update.message.reply_text("😎 Олегыч, всё под контролем")
+
+# ================== ПОКАЗАТЬ ВСЁ ==================
+async def show_all(update, context):
+    data = get_data()
+
+    result = [
+        f"🏙 {r.get('Город')}\n"
+        f"👤 {r.get('ФИО')}\n"
+        f"🏢 {r.get('Должность')}\n"
+        f"📅 {r.get('Дата окончания')}"
+        for r in data
+    ]
+
+    await update.message.reply_text("\n\n".join(result[:50]) or "Нет данных")
 
 # ================== ОБРАБОТКА ==================
 async def text_handler(update, context):
@@ -152,18 +190,13 @@ async def text_handler(update, context):
         await check_now(update, context)
 
     elif text == "📋 показать всё":
-        data = get_data()
-        res = [
-            f"🏙 {r.get('Город')}\n👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n📅 {r.get('Дата окончания')}"
-            for r in data
-        ]
-        await update.message.reply_text("\n\n".join(res[:50]) or "Нет данных")
+        await show_all(update, context)
 
 # ================== MAIN ==================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Готов 👍", reply_markup=keyboard)))
+    app.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Выбери действие 👇", reply_markup=keyboard)))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT, text_handler))
 
