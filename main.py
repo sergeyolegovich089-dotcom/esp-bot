@@ -20,7 +20,7 @@ from telegram.ext import (
     filters,
 )
 
-print("🔥 COLOR STATUS VERSION")
+print("🔥 FINAL VERSION WITH SEARCH")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -61,8 +61,8 @@ def get_cities():
 # ================== КНОПКИ ==================
 keyboard = ReplyKeyboardMarkup(
     [
-        ["🏙 По городу", "📋 Показать всё"],
-        ["⚡ Проверить сейчас"],
+        ["🏙 По городу", "🔍 Поиск"],
+        ["📋 Показать всё", "⚡ Проверить сейчас"],
     ],
     resize_keyboard=True,
 )
@@ -75,9 +75,7 @@ async def show_cities(update, context):
     for i in range(0, len(cities), 2):
         row = [InlineKeyboardButton(cities[i], callback_data=f"city:{cities[i]}")]
         if i + 1 < len(cities):
-            row.append(
-                InlineKeyboardButton(cities[i + 1], callback_data=f"city:{cities[i+1]}")
-            )
+            row.append(InlineKeyboardButton(cities[i+1], callback_data=f"city:{cities[i+1]}"))
         buttons.append(row)
 
     await update.message.reply_text(
@@ -138,7 +136,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
 
-# ================== ЦВЕТНАЯ ПРОВЕРКА ==================
+# ================== ПРОВЕРКА ==================
 async def check_now(update, context):
     data = get_data()
     today = datetime.now()
@@ -171,28 +169,17 @@ async def check_now(update, context):
         elif days <= 30:
             yellow.append(info)
 
-    blocks = []
+    if red or orange or yellow:
+        text = ""
 
-    if red:
-        blocks.append(
-            "━━━━━━━━━━━━━━\n🔴🔴🔴 ПРОСРОЧЕНО 🚨\n━━━━━━━━━━━━━━\n"
-            + "\n\n".join(red)
-        )
+        if red:
+            text += "🔴🔴🔴 ПРОСРОЧЕНО 🚨\n" + "\n\n".join(red) + "\n\n"
+        if orange:
+            text += "🟠🟠 СРОЧНО ⚠️\n" + "\n\n".join(orange) + "\n\n"
+        if yellow:
+            text += "🟡 ВНИМАНИЕ\n" + "\n\n".join(yellow)
 
-    if orange:
-        blocks.append(
-            "━━━━━━━━━━━━━━\n🟠🟠 СРОЧНО ⚠️\n━━━━━━━━━━━━━━\n"
-            + "\n\n".join(orange)
-        )
-
-    if yellow:
-        blocks.append(
-            "━━━━━━━━━━━━━━\n🟡 ВНИМАНИЕ\n━━━━━━━━━━━━━━\n"
-            + "\n\n".join(yellow)
-        )
-
-    if blocks:
-        await update.message.reply_text("\n\n".join(blocks))
+        await update.message.reply_text(text)
     else:
         await update.message.reply_text("😎 Олегыч, всё под контролем")
 
@@ -214,6 +201,30 @@ async def show_all(update, context):
 async def text_handler(update, context):
     text = update.message.text.lower()
 
+    # === АКТИВАЦИЯ ПОИСКА ===
+    if text == "🔍 поиск":
+        context.user_data["mode"] = "search"
+        await update.message.reply_text("Введи фамилию или имя")
+        return
+
+    # === РЕЖИМ ПОИСКА ===
+    if context.user_data.get("mode") == "search":
+        context.user_data["mode"] = None
+
+        data = get_data()
+        result = [
+            f"🏙 {r.get('Город')}\n"
+            f"👤 {r.get('ФИО')}\n"
+            f"🏢 {r.get('Должность')}\n"
+            f"📅 {r.get('Дата окончания')}"
+            for r in data
+            if text in r.get("ФИО", "").lower()
+        ]
+
+        await update.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено")
+        return
+
+    # === КНОПКИ ===
     if text == "🏙 по городу":
         await show_cities(update, context)
 
