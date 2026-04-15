@@ -1,10 +1,12 @@
-import logging
 import os
-import json
-import asyncio
+import logging
 from datetime import datetime
+from difflib import get_close_matches
 
-from telegram import Update, ReplyKeyboardMarkup
+import gspread
+from google.oauth2.service_account import Credentials
+
+from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -13,189 +15,212 @@ from telegram.ext import (
     filters,
 )
 
-import gspread
-from google.oauth2.service_account import Credentials
-
 # ================= НАСТРОЙКИ =================
-
 TOKEN = os.environ["BOT_TOKEN"]
 SHEET_ID = os.environ["SHEET_ID"]
 
-MY_CHAT_ID = 568554255
-
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-
-# ================= GOOGLE =================
-
-creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-client = gspread.authorize(creds)
-sheet = client.open_by_key(SHEET_ID).sheet1
-
 logging.basicConfig(level=logging.INFO)
 
+# ================= GOOGLE =================
+def get_sheet():
+    creds_dict = eval(os.environ["GOOGLE_CREDENTIALS"])
+
+    creds = Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+
+    client = gspread.authorize(creds)
+    return client.open_by_key(SHEET_ID).sheet1
+
+
 # ================= КНОПКИ =================
+keyboard = [
+    ["🔍 Поиск", "📅 По месяцу"],
+    ["📋 Показать всё", "⚡ Проверить сейчас"],
+]
 
-keyboard = ReplyKeyboardMarkup(
-    [
-        ["🔍 Поиск"],
-        ["📅 По месяцу"],
-        ["📢 Проверить сейчас"],
-    ],
-    resize_keyboard=True
-)
+markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ================= СТАРТ =================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Бот работает 👌", reply_markup=keyboard)
-
-# ================= НАПОМИНАНИЯ =================
-
-async def check_expirations_once():
-    data = sheet.get_all_records()
-    today = datetime.today()
-
-    for row in data:
-        try:
-            date_str = str(row.get("Дата окончания", "")).strip()
-
-            date_obj = None
-            for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
-                try:
-                    date_obj = datetime.strptime(date_str, fmt)
-                    break
-                except:
-                    continue
-
-            if not date_obj:
-                continue
-
-            days_left = (date_obj - today).days
-
-            if days_left in [30, 15, 7] or days_left <= 0:
-                msg = (
-                    f"⚠️ Срок заканчивается!\n\n"
-                    f"👤 {row.get('ФИО')}\n"
-                    f"📅 До: {date_str}\n"
-                    f"⏳ Осталось: {days_left} дней"
-                )
-
-                app.bot.send_message(chat_id=MY_CHAT_ID, text=msg)
-
-        except:
-            continue
-
-# 🔁 ФОНОВЫЙ ЦИКЛ
-async def background_checker():
-    while True:
-        await check_expirations_once()
-        await asyncio.sleep(3600)  # раз в час
-
-# ================= ПОИСК =================
-
-async def search_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-    data = sheet.get_all_records()
-
-    found = [r for r in data if text in str(r.get("ФИО", "")).lower()]
-
-    if not found:
-        await update.message.reply_text("❌ Ничего не найдено")
-        return
-
-    for row in found[:5]:
-        await update.message.reply_text(
-            f"{row.get('ФИО')}\nДо: {row.get('Дата окончания')}"
-        )
-
-# ================= МЕСЯЦ =================
-
+# ================= ВСПОМОГАТЕЛЬНОЕ =================
 MONTHS = {
-    "1": 1, "январь": 1,
-    "2": 2, "февраль": 2,
-    "3": 3, "март": 3,
-    "4": 4, "апрель": 4,
-    "5": 5, "май": 5,
-    "6": 6, "июнь": 6,
-    "7": 7, "июль": 7,
-    "8": 8, "август": 8,
-    "9": 9, "сентябрь": 9,
-    "10": 10, "октябрь": 10,
-    "11": 11, "ноябрь": 11,
-    "12": 12, "декабрь": 12,
+    "январь": 1, "февраль": 2, "март": 3,
+    "апрель": 4, "май": 5, "июнь": 6,
+    "июль": 7, "август": 8, "сентябрь": 9,
+    "октябрь": 10, "ноябрь": 11, "декабрь": 12,
 }
 
-async def search_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower().strip()
 
-    if text not in MONTHS:
-        await update.message.reply_text("Введите месяц (например: июль или 7)")
+def parse_date(date_str):
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except:
+        return None
+
+
+def normalize_month(text):
+    text = text.lower().strip()
+
+    if text.isdigit():
+        return int(text)
+
+    matches = get_close_matches(text, MONTHS.keys(), n=1, cutoff=0.6)
+    if matches:
+        return MONTHS[matches[0]]
+
+    return None
+
+
+# ================= КОМАНДЫ =================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Выбери действие 👇", reply_markup=markup)
+
+
+# ================= ПОКАЗАТЬ ВСЁ =================
+async def show_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sheet = get_sheet()
+    data = sheet.get_all_values()
+
+    result = ""
+    for row in data[1:]:
+        name = row[0]
+        date = row[1]
+
+        result += f"👤 {name}\n📅 До: {date}\n\n"
+
+    await update.message.reply_text(result or "Нет данных")
+
+
+# ================= ПОИСК =================
+async def search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["mode"] = "search"
+    await update.message.reply_text("Введите имя:")
+
+
+async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("mode") != "search":
         return
 
-    month = MONTHS[text]
-    data = sheet.get_all_records()
+    query = update.message.text.lower()
 
-    found = []
+    sheet = get_sheet()
+    data = sheet.get_all_values()
 
-    for row in data:
-        try:
-            date_obj = datetime.strptime(row["Дата окончания"], "%Y-%m-%d")
-            if date_obj.month == month:
-                found.append(row)
-        except:
+    result = ""
+
+    for row in data[1:]:
+        name = row[0].lower()
+        date = row[1]
+
+        if query in name:
+            result += f"👤 {row[0]}\n📅 До: {date}\n\n"
+
+    if not result:
+        result = "❌ Ничего не найдено"
+
+    await update.message.reply_text(result)
+    context.user_data["mode"] = None
+
+
+# ================= ПО МЕСЯЦУ =================
+async def by_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["mode"] = "month"
+    await update.message.reply_text("Введите месяц (например: июль или 7):")
+
+
+async def handle_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("mode") != "month":
+        return
+
+    month = normalize_month(update.message.text)
+
+    if not month:
+        await update.message.reply_text("❌ Не понял месяц")
+        return
+
+    sheet = get_sheet()
+    data = sheet.get_all_values()
+
+    result = ""
+
+    for row in data[1:]:
+        name = row[0]
+        date_str = row[1]
+
+        date = parse_date(date_str)
+        if not date:
             continue
 
-    if not found:
-        await update.message.reply_text("❌ Ничего не найдено")
-        return
+        if date.month == month:
+            result += f"👤 {name}\n📅 До: {date_str}\n\n"
 
-    for row in found[:10]:
-        await update.message.reply_text(
-            f"{row['ФИО']}\nДо: {row['Дата окончания']}"
-        )
+    if not result:
+        result = "❌ Ничего не найдено"
 
-# ================= ОБРАБОТКА =================
+    await update.message.reply_text(result)
+    context.user_data["mode"] = None
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+# ================= ПРОВЕРКА =================
+async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sheet = get_sheet()
+    data = sheet.get_all_values()
+
+    today = datetime.now()
+
+    result = ""
+
+    for row in data[1:]:
+        name = row[0]
+        date_str = row[1]
+
+        date = parse_date(date_str)
+        if not date:
+            continue
+
+        days_left = (date - today).days
+
+        if days_left in [30, 15, 7] or days_left <= 3:
+            result += f"⚠️ {name}\n📅 До: {date_str} (осталось {days_left} дн)\n\n"
+
+    if not result:
+        result = "✅ Всё спокойно"
+
+    await update.message.reply_text(result)
+
+
+# ================= ОБЩИЙ ХЕНДЛЕР =================
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     if text == "🔍 Поиск":
-        context.user_data["mode"] = "search"
-        await update.message.reply_text("Введите ФИО:")
-        return
+        await search(update, context)
 
-    if text == "📅 По месяцу":
-        context.user_data["mode"] = "month"
-        await update.message.reply_text("Введите месяц:")
-        return
+    elif text == "📅 По месяцу":
+        await by_month(update, context)
 
-    if text == "📢 Проверить сейчас":
-        await check_expirations_once()
-        await update.message.reply_text("Проверка выполнена ✅")
-        return
+    elif text == "📋 Показать всё":
+        await show_all(update, context)
 
-    mode = context.user_data.get("mode")
+    elif text == "⚡ Проверить сейчас":
+        await check_now(update, context)
 
-    if mode == "search":
-        await search_name(update, context)
-    elif mode == "month":
-        await search_month(update, context)
+    else:
+        await handle_search(update, context)
+        await handle_month(update, context)
+
 
 # ================= ЗАПУСК =================
-
 def main():
-    global app
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # 🚀 запускаем фон
-    app.create_task(background_checker())
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     print("Бот запущен 🚀")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
