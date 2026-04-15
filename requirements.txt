@@ -2,3 +2,4 @@ python-telegram-bot[job-queue]==20.7
 APScheduler==3.10.4
 gspread
 google-auth
+# fix deploy
