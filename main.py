@@ -1,202 +1,175 @@
+import logging
 import os
-import asyncio
 from datetime import datetime
-import json
+
 import gspread
 from google.oauth2.service_account import Credentials
 
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    filters,
     ContextTypes,
+    filters,
 )
 
-print("✅ NEW VERSION WORKING")
+# ---------------- НАСТРОЙКИ ----------------
 
-# ================= НАСТРОЙКИ =================
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "568554255"))
+GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS")
 
-# ================= GOOGLE =================
-sheet = None
+logging.basicConfig(level=logging.INFO)
 
-def init_google():
-    global sheet
-    try:
-        creds_json = os.getenv("GOOGLE_CREDENTIALS")
+# ---------------- GOOGLE ----------------
 
-        if not creds_json:
-            print("❌ GOOGLE_CREDENTIALS не найден")
-            return
+def connect_google():
+    creds_dict = eval(GOOGLE_CREDENTIALS)
 
-        creds_dict = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+    )
 
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
+    client = gspread.authorize(creds)
+    sheet = client.open_by_key(SHEET_ID).sheet1
+    return sheet
 
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+# ---------------- ДАННЫЕ ----------------
 
-        client = gspread.authorize(creds)
-        sheet = client.open_by_key(SHEET_ID).sheet1
-
-        print("✅ Google подключен")
-
-    except Exception as e:
-        print("❌ Ошибка Google:", e)
-
-# ================= КНОПКИ =================
-keyboard = [
-    ["🔍 Поиск", "📅 По месяцу"],
-    ["📋 Показать всё", "⚡ Проверить сейчас"]
-]
-markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-# ================= ДАННЫЕ =================
 def get_data():
-    try:
-        if sheet:
-            return sheet.get_all_records()
-    except Exception as e:
-        print("Ошибка чтения таблицы:", e)
-    return []
+    sheet = connect_google()
+    return sheet.get_all_records()
 
-# ================= ПРОВЕРКА =================
-def check_expiring():
+def parse_date(date_str):
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except:
+        return None
+
+# ---------------- КНОПКИ ----------------
+
+keyboard = ReplyKeyboardMarkup(
+    [
+        ["🔍 Поиск", "📅 По месяцу"],
+        ["📋 Показать всё", "⚡ Проверить сейчас"],
+    ],
+    resize_keyboard=True,
+)
+
+# ---------------- HANDLERS ----------------
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Выбери действие 👇",
+        reply_markup=keyboard,
+    )
+
+# ---------------- ПРОВЕРКА ----------------
+
+async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = get_data()
-    today = datetime.today()
-    results = []
+
+    today = datetime.now()
+    result = []
 
     for row in data:
         name = row.get("ФИО", "")
         date_str = row.get("Дата окончания", "")
 
-        try:
-            exp_date = datetime.strptime(date_str, "%Y-%m-%d")
-            days_left = (exp_date - today).days
-
-            if days_left in [30, 15, 7] or days_left <= 3:
-                results.append(
-                    f"👤 {name}\n📅 До: {date_str}\n⏳ Осталось: {days_left} дн.\n"
-                )
-        except:
+        date = parse_date(date_str)
+        if not date:
             continue
 
-    return results
+        days_left = (date - today).days
 
-# ================= ФОН =================
-async def background_checker(app):
-    await asyncio.sleep(10)
+        if days_left <= 30:
+            result.append(f"⚠️ {name} — {date_str} ({days_left} дн.)")
 
-    while True:
-        print("🔄 Проверка...")
+    if result:
+        await update.message.reply_text("\n".join(result))
+    else:
+        await update.message.reply_text("✅ Всё спокойно")
 
+# ---------------- ПОКАЗАТЬ ВСЁ ----------------
+
+async def show_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = get_data()
+
+    result = []
+    for row in data:
+        name = row.get("ФИО", "")
+        date_str = row.get("Дата окончания", "")
+        result.append(f"{name} — {date_str}")
+
+    await update.message.reply_text("\n".join(result[:50]))
+
+# ---------------- ПО МЕСЯЦУ ----------------
+
+months = {
+    "январь": 1, "февраль": 2, "март": 3,
+    "апрель": 4, "май": 5, "июнь": 6,
+    "июль": 7, "август": 8, "сентябрь": 9,
+    "октябрь": 10, "ноябрь": 11, "декабрь": 12,
+}
+
+async def month_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower()
+
+    if text in months:
+        month = months[text]
+    else:
         try:
-            results = check_expiring()
+            month = int(text)
+        except:
+            await update.message.reply_text("❌ Неверный месяц")
+            return
 
-            if results:
-                text = "⚠️ Напоминание:\n\n" + "\n".join(results)
-                await app.bot.send_message(chat_id=ADMIN_ID, text=text)
-            else:
-                print("✅ Всё спокойно")
+    data = get_data()
+    result = []
 
-        except Exception as e:
-            print("Ошибка фоновой проверки:", e)
+    for row in data:
+        name = row.get("ФИО", "")
+        date_str = row.get("Дата окончания", "")
+        date = parse_date(date_str)
 
-        await asyncio.sleep(86400)
+        if date and date.month == month:
+            result.append(f"{name} — {date_str}")
 
-# ================= СТАРТ =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Выбери действие 👇", reply_markup=markup)
+    if result:
+        await update.message.reply_text("\n".join(result))
+    else:
+        await update.message.reply_text("❌ Ничего не найдено")
 
-# ================= ОБРАБОТКА =================
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------------- ОБРАБОТКА ТЕКСТА ----------------
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    try:
-        # --- ПРОВЕРИТЬ ---
-        if text == "⚡ Проверить сейчас":
-            results = check_expiring()
-            await update.message.reply_text("\n".join(results) or "✅ Всё спокойно")
+    if text == "⚡ Проверить сейчас":
+        await check_now(update, context)
 
-        # --- ВСЕ ---
-        elif text == "📋 Показать всё":
-            data = get_data()
-            lines = [
-                f"👤 {r.get('ФИО')}\n📅 До: {r.get('Дата окончания')}\n"
-                for r in data
-            ]
-            await update.message.reply_text("\n".join(lines[:30]) or "Нет данных")
+    elif text == "📋 Показать всё":
+        await show_all(update, context)
 
-        # --- МЕСЯЦ ---
-        elif text == "📅 По месяцу":
-            await update.message.reply_text("Введи месяц (например: июль или 7)")
+    elif text == "📅 По месяцу":
+        await update.message.reply_text("Введи месяц (например: июль или 7)")
 
-        elif text.lower() in [
-            "январь","февраль","март","апрель","май","июнь",
-            "июль","август","сентябрь","октябрь","ноябрь","декабрь"
-        ] or text.isdigit():
+    else:
+        await month_handler(update, context)
 
-            months = {
-                "январь":1,"февраль":2,"март":3,"апрель":4,
-                "май":5,"июнь":6,"июль":7,"август":8,
-                "сентябрь":9,"октябрь":10,"ноябрь":11,"декабрь":12
-            }
+# ---------------- MAIN ----------------
 
-            month = int(text) if text.isdigit() else months.get(text.lower())
-
-            data = get_data()
-            results = []
-
-            for row in data:
-                try:
-                    d = datetime.strptime(row.get("Дата окончания"), "%Y-%m-%d")
-                    if d.month == month:
-                        results.append(
-                            f"👤 {row.get('ФИО')}\n📅 До: {row.get('Дата окончания')}\n"
-                        )
-                except:
-                    continue
-
-            await update.message.reply_text("\n".join(results) or "❌ Ничего не найдено")
-
-        # --- ПОИСК ---
-        elif text == "🔍 Поиск":
-            await update.message.reply_text("Введи имя")
-
-        else:
-            data = get_data()
-            results = [
-                f"👤 {r.get('ФИО')}\n📅 До: {r.get('Дата окончания')}\n"
-                for r in data
-                if text.lower() in r.get("ФИО", "").lower()
-            ]
-
-            await update.message.reply_text("\n".join(results) or "❌ Ничего не найдено")
-
-    except Exception as e:
-        print("Ошибка:", e)
-        await update.message.reply_text("⚠️ Ошибка")
-
-# ================= MAIN =================
-async def main():
-    init_google()
-
+def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT, handle))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-    asyncio.create_task(background_checker(app))
+    print("✅ BOT STARTED")
 
-    print("🚀 Бот запущен")
-    await app.run_polling()
+    app.run_polling()
 
-# ================= ЗАПУСК =================
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
