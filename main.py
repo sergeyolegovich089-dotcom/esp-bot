@@ -1,20 +1,15 @@
 import logging
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
+from difflib import get_close_matches
 
-from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    ContextTypes,
     MessageHandler,
-    CallbackQueryHandler,
+    ContextTypes,
     filters,
 )
 
@@ -23,108 +18,147 @@ from google.oauth2.service_account import Credentials
 
 # === ПЕРЕМЕННЫЕ ===
 TOKEN = os.environ["BOT_TOKEN"]
-SHEET_ID = os.environ["SHEET_URL"]
+SHEET_ID = os.environ["SHEET_ID"]
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+# === GOOGLE SHEETS ===
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
 creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
-
 sheet = client.open_by_key(SHEET_ID).sheet1
 
+# === ЛОГИ ===
 logging.basicConfig(level=logging.INFO)
 
 # === КНОПКИ ===
 keyboard = ReplyKeyboardMarkup(
     [
-        ["📅 Проверить сейчас"],
+        ["🔍 Поиск"],
+        ["📅 По месяцу"],
     ],
     resize_keyboard=True,
 )
 
-# === СТАРТ ===
+# === /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Бот следит за сроками ЭЦП 👇",
-        reply_markup=keyboard,
+        "Привет! Выбери действие 👇",
+        reply_markup=keyboard
     )
 
-# === ПРОВЕРКА ===
-async def check_expirations(context: ContextTypes.DEFAULT_TYPE):
+# === ПОИСК ПО ФИО ===
+async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.message.text.lower()
     data = sheet.get_all_records()
-    today = datetime.today()
 
-    for i, row in enumerate(data, start=2):
+    results = []
+
+    for row in data:
+        fio = row.get("ФИО", "").lower()
+        if name in fio:
+            results.append(row)
+
+    # если ничего не нашли — пробуем похожие
+    if not results:
+        all_names = [row.get("ФИО", "") for row in data]
+        matches = get_close_matches(name, all_names, n=3, cutoff=0.5)
+
+        if matches:
+            await update.message.reply_text(
+                "Возможно ты имел в виду:\n" + "\n".join(matches)
+            )
+            return
+
+        await update.message.reply_text("❌ Ничего не найдено")
+        return
+
+    # вывод результатов
+    for row in results[:5]:
+        msg = (
+            f"👤 {row.get('ФИО')}\n"
+            f"🏢 {row.get('Должность')}\n"
+            f"📍 {row.get('Город')}\n"
+            f"📅 До: {row.get('Дата окончания')}\n"
+            f"📊 Статус: {row.get('Статус')}"
+        )
+        await update.message.reply_text(msg)
+
+# === ПОИСК ПО МЕСЯЦУ ===
+async def find_by_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower()
+
+    months = {
+        "январь": 1, "февраль": 2, "март": 3,
+        "апрель": 4, "май": 5, "июнь": 6,
+        "июль": 7, "август": 8, "сентябрь": 9,
+        "октябрь": 10, "ноябрь": 11, "декабрь": 12
+    }
+
+    # определяем месяц
+    if text.isdigit():
+        month = int(text)
+    else:
+        month = months.get(text)
+
+    if not month:
+        await update.message.reply_text("❌ Введи месяц (например: июль или 7)")
+        return
+
+    data = sheet.get_all_records()
+    results = []
+
+    for row in data:
+        date_str = row.get("Дата окончания")
+
         try:
-            if row.get("Продлено") == "да":
-                continue
-
-            end_date = datetime.strptime(row["Дата окончания"], "%Y-%m-%d")
-            days_left = (end_date - today).days
-
-            if days_left in [30, 15, 7] or days_left <= 3:
-                msg = (
-                    f"⚠️ Срок заканчивается!\n\n"
-                    f"👤 {row['ФИО']}\n"
-                    f"📅 До: {row['Дата окончания']}\n"
-                    f"⏳ Осталось: {days_left} дней"
-                )
-
-                keyboard = InlineKeyboardMarkup(
-                    [
-                        [
-                            InlineKeyboardButton(
-                                "✅ Продлена",
-                                callback_data=f"done_{i}"
-                            )
-                        ]
-                    ]
-                )
-
-                await context.bot.send_message(
-                    chat_id=context.job.chat_id,
-                    text=msg,
-                    reply_markup=keyboard,
-                )
-
+            date = datetime.strptime(date_str, "%Y-%m-%d")
+            if date.month == month:
+                results.append(row)
         except:
             continue
 
-# === КНОПКА ПРОДЛЕНО ===
-async def mark_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    if not results:
+        await update.message.reply_text("❌ Ничего не найдено")
+        return
 
-    row_index = int(query.data.split("_")[1])
+    msg = "📅 Найдено:\n\n"
 
-    sheet.update_cell(row_index, 6, "да")  # 6 = столбец "Продлено"
+    for row in results[:10]:
+        msg += f"{row.get('ФИО')} — {row.get('Дата окончания')}\n"
 
-    await query.edit_message_text("✅ Отмечено как продлено")
+    await update.message.reply_text(msg)
 
-# === РУЧНАЯ ПРОВЕРКА ===
-async def manual_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Проверяю...")
+# === ОБРАБОТКА КНОПОК ===
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
 
-    context.job = type("obj", (object,), {"chat_id": update.effective_chat.id})
-    await check_expirations(context)
+    if text == "🔍 Поиск":
+        await update.message.reply_text("Введите ФИО:")
+        context.user_data["mode"] = "search"
+
+    elif text == "📅 По месяцу":
+        await update.message.reply_text("Введите месяц (например: июль или 7):")
+        context.user_data["mode"] = "month"
+
+    else:
+        mode = context.user_data.get("mode")
+
+        if mode == "search":
+            await find(update, context)
+        elif mode == "month":
+            await find_by_month(update, context)
+        else:
+            await update.message.reply_text("Выбери действие через кнопки 👇", reply_markup=keyboard)
 
 # === ЗАПУСК ===
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT, manual_check))
-    app.add_handler(CallbackQueryHandler(mark_done))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
 
-    # === АВТОПРОВЕРКА КАЖДЫЙ ДЕНЬ ===
-    app.job_queue.run_daily(
-        check_expirations,
-        time=datetime.strptime("09:00", "%H:%M").time(),
-        chat_id=YOUR_CHAT_ID  # 👈 сюда вставь свой Telegram ID
-    )
-
-    print("Бот запущен 🚀")
+    print("Бот запущен...")
     app.run_polling()
 
 if __name__ == "__main__":
