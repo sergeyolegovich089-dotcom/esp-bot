@@ -14,9 +14,9 @@ from telegram.ext import (
     filters,
 )
 
-print("✅ BOT VERSION FINAL")
+print("✅ FINAL STABLE VERSION")
 
-# ================== НАСТРОЙКИ ==================
+# ================== ПЕРЕМЕННЫЕ ==================
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS")
@@ -41,6 +41,32 @@ def get_data():
         print("❌ Ошибка Google:", e)
         return []
 
+# ================== ПАРСИНГ ДАТ ==================
+def parse_date(date_str):
+    if not date_str:
+        return None
+
+    date_str = str(date_str).strip()
+
+    # защита от кривых дат типа 2026-06-2026
+    parts = date_str.split("-")
+    if len(parts) == 3 and len(parts[2]) > 2:
+        return None
+
+    formats = [
+        "%Y-%m-%d",
+        "%d.%m.%Y",
+        "%d/%m/%Y"
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except:
+            continue
+
+    return None
+
 # ================== КНОПКИ ==================
 keyboard = ReplyKeyboardMarkup(
     [
@@ -50,7 +76,7 @@ keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-# ================== СТАРТ ==================
+# ================== START ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Выбери действие 👇", reply_markup=keyboard)
 
@@ -64,24 +90,27 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name = row.get("ФИО", "")
         date_str = row.get("Дата окончания", "")
 
-        try:
-            date = datetime.strptime(date_str, "%Y-%m-%d")
-            days = (date - today).days
-
-            if days <= 30:
-                result.append(f"⚠️ {name} — {date_str} ({days} дн.)")
-        except:
+        d = parse_date(date_str)
+        if not d:
             continue
+
+        days = (d - today).days
+
+        if days <= 30:
+            result.append(f"⚠️ {name} — {date_str} ({days} дн.)")
 
     await update.message.reply_text("\n".join(result) or "✅ Всё спокойно")
 
-# ================== ВСЕ ==================
+# ================== ПОКАЗАТЬ ВСЕ ==================
 async def show_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = get_data()
-    result = [
-        f"👤 {r.get('ФИО')}\n📅 До: {r.get('Дата окончания')}\n"
-        for r in data
-    ]
+
+    result = []
+    for r in data:
+        result.append(
+            f"👤 {r.get('ФИО')}\n📅 До: {r.get('Дата окончания')}\n"
+        )
+
     await update.message.reply_text("\n".join(result[:50]) or "Нет данных")
 
 # ================== ОБРАБОТКА ==================
@@ -111,14 +140,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for row in data:
             date_str = row.get("Дата окончания", "")
-            try:
-                d = datetime.strptime(date_str, "%Y-%m-%d")
-                if d.month == month:
-                    result.append(
-                        f"👤 {row.get('ФИО')}\n📅 До: {date_str}\n"
-                    )
-            except:
+            d = parse_date(date_str)
+
+            if not d:
                 continue
+
+            if d.month == month:
+                result.append(
+                    f"👤 {row.get('ФИО')}\n📅 До: {date_str}\n"
+                )
 
         await update.message.reply_text("\n".join(result) or "❌ Ничего не найдено")
         return
