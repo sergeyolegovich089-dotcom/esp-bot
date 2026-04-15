@@ -19,7 +19,7 @@ from telegram.ext import (
     filters,
 )
 
-print("🔥 CARD VERSION")
+print("🔥 UI APP VERSION (FIXED)")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -71,7 +71,7 @@ def build_status_text():
     data = get_data()
     today = datetime.now()
 
-    result = []
+    red, orange, yellow = [], [], []
 
     for row in data:
         d = parse_date(row.get("Дата окончания", ""))
@@ -80,21 +80,30 @@ def build_status_text():
 
         days = (d - today).days
 
-        if days <= 30:
-            result.append(
-                f"👤 {row.get('ФИО')} — {days} дн."
-            )
+        info = (
+            f"👤 {row.get('ФИО')}\n"
+            f"🏢 {row.get('Должность')}\n"
+            f"🏙 {row.get('Город')}\n"
+            f"📅 {row.get('Дата окончания')} ({days} дн.)"
+        )
 
-    return "\n".join(result)
+        if days < 0:
+            red.append(info)
+        elif days <= 7:
+            orange.append(info)
+        elif days <= 30:
+            yellow.append(info)
 
-# ================== КАРТОЧКА ==================
-def build_card(row):
-    return (
-        f"👤 {row.get('ФИО')}\n"
-        f"🏢 {row.get('Должность')}\n"
-        f"🏙 {row.get('Город')}\n"
-        f"📅 {row.get('Дата окончания')}"
-    )
+    text = ""
+
+    if red:
+        text += "🔴🔴🔴 ПРОСРОЧЕНО 🚨\n" + "\n\n".join(red) + "\n\n"
+    if orange:
+        text += "🟠🟠 СРОЧНО ⚠️\n" + "\n\n".join(orange) + "\n\n"
+    if yellow:
+        text += "🟡 ВНИМАНИЕ\n" + "\n\n".join(yellow)
+
+    return text.strip()
 
 # ================== CALLBACK ==================
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,24 +127,14 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("city:"):
         city = data.split(":")[1].lower()
 
-        data_rows = [
-            r for r in get_data()
+        result = [
+            f"🏙 {r.get('Город')}\n👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n📅 {r.get('Дата окончания')}"
+            for r in get_data()
             if city in r.get("Город", "").lower()
         ]
 
-        buttons = [
-            [InlineKeyboardButton(r.get("ФИО"), callback_data=f"user:{i}")]
-            for i, r in enumerate(data_rows)
-        ]
-
-        context.user_data["list"] = data_rows
-
-        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="cities")])
-
-        await query.edit_message_text(
-            "Выбери сотрудника:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        text = "\n\n".join(result) or "❌ Ничего не найдено"
+        await query.edit_message_text(text, reply_markup=back_button())
 
     # МЕСЯЦЫ
     elif data == "months":
@@ -157,55 +156,27 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("month:"):
         month = int(data.split(":")[1])
 
-        data_rows = []
+        result = []
         for r in get_data():
             d = parse_date(r.get("Дата окончания", ""))
             if d and d.month == month:
-                data_rows.append(r)
+                result.append(
+                    f"👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n🏙 {r.get('Город')}\n📅 {r.get('Дата окончания')}"
+                )
 
-        buttons = [
-            [InlineKeyboardButton(r.get("ФИО"), callback_data=f"user:{i}")]
-            for i, r in enumerate(data_rows)
-        ]
-
-        context.user_data["list"] = data_rows
-
-        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="months")])
-
-        await query.edit_message_text(
-            "Выбери сотрудника:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-
-    # КАРТОЧКА СОТРУДНИКА
-    elif data.startswith("user:"):
-        idx = int(data.split(":")[1])
-        row = context.user_data.get("list", [])[idx]
-
-        await query.edit_message_text(
-            build_card(row),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
-            ])
-        )
+        text = "\n\n".join(result) or "❌ Ничего не найдено"
+        await query.edit_message_text(text, reply_markup=back_button())
 
     # ВСЕ
     elif data == "all":
         data_rows = get_data()
 
-        buttons = [
-            [InlineKeyboardButton(r.get("ФИО"), callback_data=f"user:{i}")]
-            for i, r in enumerate(data_rows[:50])
+        result = [
+            f"🏙 {r.get('Город')}\n👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n📅 {r.get('Дата окончания')}"
+            for r in data_rows
         ]
 
-        context.user_data["list"] = data_rows
-
-        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
-
-        await query.edit_message_text(
-            "Выбери сотрудника:",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        await query.edit_message_text("\n\n".join(result[:50]) or "Нет данных", reply_markup=back_button())
 
     # ПРОВЕРКА
     elif data == "check":
@@ -224,23 +195,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text = update.message.text.lower()
 
-        data_rows = [
-            r for r in get_data()
+        result = [
+            f"👤 {r.get('ФИО')}\n🏢 {r.get('Должность')}\n🏙 {r.get('Город')}\n📅 {r.get('Дата окончания')}"
+            for r in get_data()
             if text in r.get("ФИО", "").lower()
         ]
 
-        buttons = [
-            [InlineKeyboardButton(r.get("ФИО"), callback_data=f"user:{i}")]
-            for i, r in enumerate(data_rows)
-        ]
-
-        context.user_data["list"] = data_rows
-
-        buttons.append([InlineKeyboardButton("⬅️ Назад", callback_data="menu")])
-
         await update.message.reply_text(
-            "Результаты поиска:",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            "\n\n".join(result) or "❌ Ничего не найдено",
+            reply_markup=main_menu()
         )
 
 # ================== START ==================
