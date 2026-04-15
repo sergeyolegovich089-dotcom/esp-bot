@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-print("✅ STABLE VERSION")
+print("✅ FINAL STABLE VERSION")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -82,6 +82,23 @@ def check_logic():
     result.sort(key=lambda x: x[0])
     return [r[1] for r in result]
 
+# ================== ПРОДЛЕНИЕ ==================
+def mark_extended(name):
+    try:
+        sheet = get_sheet()
+        rows = sheet.get_all_records()
+
+        for i, row in enumerate(rows, start=2):
+            if name.lower() in row.get("ФИО", "").lower():
+                sheet.update_cell(i, 8, "да")  # колонка H
+                return True
+
+        return False
+
+    except Exception as e:
+        print("❌ Ошибка продления:", e)
+        return False
+
 # ================== КНОПКИ ==================
 keyboard = ReplyKeyboardMarkup(
     [
@@ -102,26 +119,10 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = check_logic()
     await update.message.reply_text("\n".join(res) or "😎 Олегыч, всё тихо")
 
-# ================== ПРОДЛИТЬ ==================
+# ================== РЕЖИМ ПРОДЛЕНИЯ ==================
 async def extend_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["mode"] = "extend"
     await update.message.reply_text("Введи фамилию для продления")
-
-def mark_extended(name):
-    try:
-        sheet = get_sheet()
-        rows = sheet.get_all_records()
-
-        for i, row in enumerate(rows, start=2):
-            if name.lower() in row.get("ФИО", "").lower():
-                sheet.update_cell(i, 8, "да")  # колонка H = Продлено
-                return True
-
-        return False
-
-    except Exception as e:
-        print("❌ Ошибка продления:", e)
-        return False
 
 # ================== ПЛАНИРОВЩИК ==================
 last_sent = set()
@@ -131,17 +132,17 @@ last_send_day = None
 async def scheduler(app):
     global last_check_day, last_send_day, last_sent
 
-    await asyncio.sleep(10)
+    await asyncio.sleep(5)
 
     while True:
         now = datetime.now()
 
-        # проверка в 9
+        # Проверка в 9
         if now.hour >= 9 and last_check_day != now.date():
             print("🔍 Проверка выполнена")
             last_check_day = now.date()
 
-        # отправка в 11
+        # Отправка в 11
         if now.hour >= 11 and last_send_day != now.date():
             print("📨 Отправка уведомлений")
 
@@ -163,7 +164,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
     context.application.bot_data["chat_ids"].add(update.effective_chat.id)
 
-    # ===== ПРОДЛЕНИЕ =====
+    # ПРОДЛЕНИЕ
     if context.user_data.get("mode") == "extend":
         context.user_data["mode"] = None
 
@@ -173,7 +174,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Не найдено")
         return
 
-    # ===== МЕСЯЦ =====
+    # МЕСЯЦ
     if context.user_data.get("mode") == "month":
         context.user_data["mode"] = None
 
@@ -194,7 +195,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(res) or "❌ Ничего не найдено")
         return
 
-    # ===== КНОПКИ =====
+    # КНОПКИ
     if text == "⚡ проверить сейчас":
         await check_now(update, context)
 
@@ -226,13 +227,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # важно!
     app.bot_data["chat_ids"] = set()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT, text_handler))
 
-    app.create_task(scheduler(app))
+    async def on_start(app):
+        print("📡 Scheduler started")
+        asyncio.create_task(scheduler(app))
+
+    app.post_init = on_start
 
     print("🚀 BOT STARTED")
     app.run_polling()
