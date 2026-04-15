@@ -14,10 +14,12 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
     ContextTypes,
+    filters,
 )
 
-print("🔥 UI APP VERSION")
+print("🔥 UI APP VERSION (FIXED)")
 
 TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -110,7 +112,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
 
-    # ГЛАВНОЕ МЕНЮ
+    # МЕНЮ
     if data == "menu":
         await query.edit_message_text("Выбери действие 👇", reply_markup=main_menu())
 
@@ -132,7 +134,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         text = "\n\n".join(result) or "❌ Ничего не найдено"
-
         await query.edit_message_text(text, reply_markup=back_button())
 
     # МЕСЯЦЫ
@@ -164,7 +165,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
         text = "\n\n".join(result) or "❌ Ничего не найдено"
-
         await query.edit_message_text(text, reply_markup=back_button())
 
     # ВСЕ
@@ -188,7 +188,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["search"] = True
         await query.edit_message_text("Введи фамилию или имя:")
 
-# ================== ПОИСК ТЕКСТОМ ==================
+# ================== ПОИСК ==================
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("search"):
         context.user_data["search"] = False
@@ -201,7 +201,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if text in r.get("ФИО", "").lower()
         ]
 
-        await update.message.reply_text("\n\n".join(result) or "❌ Ничего не найдено", reply_markup=main_menu())
+        await update.message.reply_text(
+            "\n\n".join(result) or "❌ Ничего не найдено",
+            reply_markup=main_menu()
+        )
 
 # ================== START ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,7 +225,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback))
-    app.add_handler(MessageHandler(filters.TEXT, message_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     app.job_queue.run_daily(notify, time(hour=11, minute=0))
 
