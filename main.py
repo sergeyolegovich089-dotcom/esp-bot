@@ -2,7 +2,6 @@ import logging
 import os
 import json
 from datetime import datetime
-from difflib import get_close_matches
 
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -16,149 +15,157 @@ from telegram.ext import (
 import gspread
 from google.oauth2.service_account import Credentials
 
-# === ПЕРЕМЕННЫЕ ===
+# ================= НАСТРОЙКИ =================
+
 TOKEN = os.environ["BOT_TOKEN"]
 SHEET_ID = os.environ["SHEET_ID"]
 
-# === GOOGLE SHEETS ===
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+
+# ================= GOOGLE SHEETS =================
 
 creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
+
 sheet = client.open_by_key(SHEET_ID).sheet1
 
-# === ЛОГИ ===
+# ================= ЛОГИ =================
+
 logging.basicConfig(level=logging.INFO)
 
-# === КНОПКИ ===
+# ================= КНОПКИ =================
+
 keyboard = ReplyKeyboardMarkup(
     [
         ["🔍 Поиск"],
         ["📅 По месяцу"],
     ],
-    resize_keyboard=True,
+    resize_keyboard=True
 )
 
-# === /start ===
+# ================= КОМАНДЫ =================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Выбери действие 👇",
+        "Бот готов к работе 👌\nВыбери действие:",
         reply_markup=keyboard
     )
 
-# === ПОИСК ПО ФИО ===
-async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.message.text.lower()
+# ================= ПОИСК ПО ФИО =================
+
+async def search_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower()
     data = sheet.get_all_records()
 
-    results = []
+    found = []
 
     for row in data:
-        fio = row.get("ФИО", "").lower()
-        if name in fio:
-            results.append(row)
+        fio = str(row.get("ФИО", "")).lower()
 
-    # если ничего не нашли — пробуем похожие
-    if not results:
-        all_names = [row.get("ФИО", "") for row in data]
-        matches = get_close_matches(name, all_names, n=3, cutoff=0.5)
+        if text in fio:
+            found.append(row)
 
-        if matches:
-            await update.message.reply_text(
-                "Возможно ты имел в виду:\n" + "\n".join(matches)
-            )
-            return
-
+    if not found:
         await update.message.reply_text("❌ Ничего не найдено")
         return
 
-    # вывод результатов
-    for row in results[:5]:
+    for row in found[:5]:
         msg = (
-            f"👤 {row.get('ФИО')}\n"
-            f"🏢 {row.get('Должность')}\n"
-            f"📍 {row.get('Город')}\n"
-            f"📅 До: {row.get('Дата окончания')}\n"
-            f"📊 Статус: {row.get('Статус')}"
+            f"👤 {row.get('ФИО','')}\n"
+            f"💼 {row.get('Должность','')}\n"
+            f"🏙 {row.get('Город','')}\n"
+            f"📅 До: {row.get('Дата окончания','')}\n"
+            f"📊 {row.get('Статус','')}"
         )
         await update.message.reply_text(msg)
 
-# === ПОИСК ПО МЕСЯЦУ ===
-async def find_by_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
+# ================= ПОИСК ПО МЕСЯЦУ =================
 
-    months = {
-        "январь": 1, "февраль": 2, "март": 3,
-        "апрель": 4, "май": 5, "июнь": 6,
-        "июль": 7, "август": 8, "сентябрь": 9,
-        "октябрь": 10, "ноябрь": 11, "декабрь": 12
-    }
+MONTHS = {
+    "1": 1, "январь": 1,
+    "2": 2, "февраль": 2,
+    "3": 3, "март": 3,
+    "4": 4, "апрель": 4,
+    "5": 5, "май": 5,
+    "6": 6, "июнь": 6,
+    "7": 7, "июль": 7,
+    "8": 8, "август": 8,
+    "9": 9, "сентябрь": 9,
+    "10": 10, "октябрь": 10,
+    "11": 11, "ноябрь": 11,
+    "12": 12, "декабрь": 12,
+}
 
-    # определяем месяц
-    if text.isdigit():
-        month = int(text)
-    else:
-        month = months.get(text)
+async def search_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower().strip()
 
-    if not month:
-        await update.message.reply_text("❌ Введи месяц (например: июль или 7)")
+    if text not in MONTHS:
+        await update.message.reply_text("Напиши месяц (например: июль или 7)")
         return
 
+    month = MONTHS[text]
     data = sheet.get_all_records()
-    results = []
+
+    found = []
 
     for row in data:
-        date_str = row.get("Дата окончания")
+        date_str = str(row.get("Дата окончания", ""))
 
         try:
-            date = datetime.strptime(date_str, "%Y-%m-%d")
-            if date.month == month:
-                results.append(row)
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+            if date_obj.month == month:
+                found.append(row)
         except:
             continue
 
-    if not results:
+    if not found:
         await update.message.reply_text("❌ Ничего не найдено")
         return
 
-    msg = "📅 Найдено:\n\n"
+    await update.message.reply_text(f"Найдено: {len(found)}")
 
-    for row in results[:10]:
-        msg += f"{row.get('ФИО')} — {row.get('Дата окончания')}\n"
+    for row in found[:10]:
+        msg = (
+            f"👤 {row.get('ФИО','')}\n"
+            f"📅 До: {row.get('Дата окончания','')}\n"
+            f"📊 {row.get('Статус','')}"
+        )
+        await update.message.reply_text(msg)
 
-    await update.message.reply_text(msg)
+# ================= ОБРАБОТКА КНОПОК =================
 
-# === ОБРАБОТКА КНОПОК ===
-async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     if text == "🔍 Поиск":
-        await update.message.reply_text("Введите ФИО:")
         context.user_data["mode"] = "search"
+        await update.message.reply_text("Введите ФИО или часть:")
+        return
 
-    elif text == "📅 По месяцу":
-        await update.message.reply_text("Введите месяц (например: июль или 7):")
+    if text == "📅 По месяцу":
         context.user_data["mode"] = "month"
+        await update.message.reply_text("Введите месяц (например: июль или 7):")
+        return
 
+    mode = context.user_data.get("mode")
+
+    if mode == "search":
+        await search_name(update, context)
+    elif mode == "month":
+        await search_month(update, context)
     else:
-        mode = context.user_data.get("mode")
+        await update.message.reply_text("Выбери действие через кнопки 👇")
 
-        if mode == "search":
-            await find(update, context)
-        elif mode == "month":
-            await find_by_month(update, context)
-        else:
-            await update.message.reply_text("Выбери действие через кнопки 👇", reply_markup=keyboard)
+# ================= ЗАПУСК =================
 
-# === ЗАПУСК ===
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("Бот запущен...")
+    print("Бот запущен 🚀")
     app.run_polling()
 
 if __name__ == "__main__":
