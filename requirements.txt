@@ -1,3 +1,5 @@
 python-telegram-bot[job-queue]==20.7
-gspread
-google-auth
+gspread==6.0.2
+google-auth==2.29.0
+
+# rebuild force 123
